@@ -291,7 +291,7 @@ if not firebase_admin._apps:
         # secrets.toml에 저장해둔 파이어베이스 열쇠를 불러옵니다.
         key_dict = dict(st.secrets["firebase"])
         cred = credentials.Certificate(key_dict)
-        firebase_admin.initialize_app(cred)
+        if not firebase_admin._apps: firebase_admin.initialize_app(cred)
     except Exception as e:
         st.error(f"파이어베이스 인증 에러: secrets.toml 파일이 없거나 설정이 잘못되었습니다. ({e})")
 
