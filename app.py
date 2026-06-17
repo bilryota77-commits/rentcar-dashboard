@@ -925,3 +925,73 @@ if 'monitoring_report' in st.session_state and st.session_state.monitoring_repor
 
 st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
+
+# =========================================================================
+# 🚀 [Next.js 대시보드 통신용 API 엔진] - app.py 맨 아래에 붙여넣으세요
+# =========================================================================
+@st.cache_resource
+def get_api_vault():
+    return {
+        "inventory": {"totalCars": 0, "todayRevenue": 0, "lastSync": "동기화 대기중"},
+        "placeSummary": {"totalSpend": 0, "sevenDayTotal": 0},
+        "placeLocations": [],
+        "powerlinkSummary": {"totalSpend": 0, "sevenDayTotal": 0},
+        "powerlinkRows": [],
+        "aiReport": "대시보드와 연결되었습니다. Streamlit에서 AI 진단을 실행해주세요."
+    }
+
+vault = get_api_vault()
+
+# 1. 화면(Streamlit)에서 동기화된 최신 데이터를 공용 금고(vault)에 실시간 업데이트
+if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not None:
+    vault["inventory"]["totalCars"] = int(st.session_state.df_clean_data.shape[0])
+    vault["inventory"]["lastSync"] = st.session_state.get('api_sync_timestamp', '방금 전')
+
+if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
+    locs = []
+    tot_spend = 0
+    for loc, d in st.session_state.place_diagnosis_data.items():
+        tot_spend += d.get('spend', 0)
+        locs.append({
+            "id": loc, "name": loc, 
+            "status": "ON" if d.get('is_on') else "OFF",
+            "rank": f"{d.get('avg_rank', 0):.1f}위",
+            "spend": d.get('spend', 0),
+            "sales": d.get('spend', 0) * 8, # 임시(추정매출 로직)
+            "count": d.get('clicks', 0)
+        })
+    vault["placeLocations"] = locs
+    vault["placeSummary"]["totalSpend"] = tot_spend
+    if 'place_7d_flow' in st.session_state:
+        vault["placeSummary"]["sevenDayTotal"] = sum(st.session_state.place_7d_flow.values())
+
+if 'merged_df' in st.session_state and st.session_state.merged_df is not None:
+    p_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
+    p_rows = []
+    for idx, r in p_data.iterrows():
+        p_rows.append({
+            "id": str(idx), "keyword": r['캠페인명'], 
+            "status": "운영중", "rank": 0, 
+            "bid": r['CPC_후'], "spend": r['조정 후 비용'], 
+            "clicks": r.get('클릭수_후', 0), "action": "keep"
+        })
+    vault["powerlinkRows"] = p_rows
+    
+    if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
+        dates = sorted(st.session_state.daily_flow_data.keys())
+        if dates:
+            vault["powerlinkSummary"]["totalSpend"] = st.session_state.daily_flow_data[dates[-1]].get("파워링크", 0)
+            vault["powerlinkSummary"]["sevenDayTotal"] = sum([v.get("파워링크", 0) for v in st.session_state.daily_flow_data.values()])
+
+if 'monitoring_report' in st.session_state and st.session_state.monitoring_report:
+    vault["aiReport"] = st.session_state.monitoring_report
+
+# 2. 외부(Next.js)에서 데이터를 요청하면 JSON으로 문을 열어주고 프로그램 정지
+try:
+    is_api = st.query_params.get("api") == "true"
+except:
+    is_api = "api" in st.experimental_get_query_params()
+
+if is_api:
+    st.json(vault)
+    st.stop()
