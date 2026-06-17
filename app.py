@@ -14,6 +14,24 @@ import urllib.parse
 import concurrent.futures
 import re
 
+# [모바일 최적화 코드] 하단 여백 제거 및 전체 폭 최적화
+st.markdown("""
+<style>
+    /* 모바일에서 하단 불필요한 공백 제거 */
+    .block-container { padding-bottom: 0rem !important; }
+    
+    /* 4구역 AI 지침 박스 모바일 가독성 개선 */
+    .ai-box { 
+        background-color: #f8fafc; 
+        border: 1px solid #e2e8f0; 
+        border-radius: 8px; 
+        padding: 15px; 
+        font-size: 14px; 
+        line-height: 1.5;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # =========================================================================
 # ⚡ [V28.4 마스터] 네이버 API 통계 정밀 추출 엔진 (글로벌 안전지대 배치)
 # =========================================================================
@@ -851,13 +869,14 @@ if 'merged_df' in st.session_state and st.session_state.merged_df is not None an
         
 st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
+
 # ==========================================
 # 4. [4구역] AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
 # ==========================================
 st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
 <div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-    4. AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
+    🤖 4. AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
 </div>
 """, unsafe_allow_html=True)
 
@@ -870,7 +889,6 @@ if st.button("재고 및 광고 성과 통합 검증 시작", key="ai_report_btn
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel('gemini-2.5-flash')
             
-            # 2구역과 3구역에서 긁어온 팩트 데이터를 AI에게 주입할 텍스트로 변환
             diag_info = ""
             if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
                 for loc, data in st.session_state.place_diagnosis_data.items():
@@ -880,37 +898,25 @@ if st.button("재고 및 광고 성과 통합 검증 시작", key="ai_report_btn
             sys_prompt = f"""
             당신은 빌려타렌트카의 퍼포먼스 마케터입니다.
             다음 100% 팩트 데이터를 바탕으로 비효율 예산 누수를 막고, 영업소별 명확한 단가 조절 및 마케팅 지침 3가지를 구체적 수치와 함께 도출하십시오.
-            (추상적인 조언을 배제하고, 철저히 비용 절감과 유입 극대화 관점에서 작성할 것)
-
-            [영업소별 팩트 상태]
-            {diag_info}
-            
-            [현장 요구사항]
-            {user_remark}
+            [영업소별 팩트 상태] {diag_info}
+            [현장 요구사항] {user_remark}
             """
-            
             st.session_state.monitoring_report = model.generate_content(sys_prompt).text
             st.success("AI 기반 마케팅 조치안 작성이 완료되었습니다.")
         
         except Exception as e:
             st.warning("⚠️ 구글 AI 허용 한도 초과 혹은 통신 장애. 내부 관제 엔진으로 즉시 백업 분석을 출력합니다.")
-            
-            local_report = f"""
+            local_report = """
             ### 🚨 빌려타렌트카 내부 관제 시스템 긴급 지침안
-            
-            **1. 즉각적인 예산 방어 (효율 저하 지점 통제)**
-            상단 2구역의 팩트 보드를 확인하십시오. 수동 확인 시 '순위 밖'으로 밀려있으나 어제 비용 지출이 발생한 영업소는 품질지수(클릭률)가 심각하게 훼손된 상태입니다. 단가 인상을 보류하고 광고 문구와 썸네일을 먼저 교체하십시오.
-            
-            **2. C4(단기/월렌트) 주력 재고 기반 노출 전환**
-            재고 현황판에서 현재 가용 대수가 가장 많은 차량 그룹(예: 중형/SUV)을 파악하십시오. 해당 차량이 주로 배차되는 '마곡 본점' 및 인접 권역 캠페인 예산을 상향하여 회전율을 극대화해야 합니다.
-            
-            **3. 일일 예산 소진 속도 캘리브레이션**
-            3구역의 최근 7일 소진액 흐름을 참고하여, 특정 요일에 예산이 과도하게 이탈하는 캠페인은 '노출 시간대'를 렌트카 수요가 몰리는 핵심 시간(08시~15시 등)으로 축소 세팅하십시오.
+            **1. 즉각적인 예산 방어:** 상단 2구역 확인. '순위 밖'인데 지출 발생 시 품질지수 훼손 상태입니다. 문구부터 교체하십시오.
+            **2. C4(단기/월렌트) 주력 재고 전환:** 가용 대수 많은 차량 그룹을 파악하여 마곡 본점/인접 권역 예산을 상향하십시오.
+            **3. 일일 예산 소진 캘리브레이션:** 3구역 최근 흐름상 특정 요일 이탈 캠페인은 노출 시간대를 핵심 시간(08시~15시)으로 축소하십시오.
             """
             st.session_state.monitoring_report = local_report
 
+# [중요] 여기에 ai-box 클래스를 입혀서 모바일 가독성 확보!
 if 'monitoring_report' in st.session_state and st.session_state.monitoring_report != "":
-    st.markdown(f"<div style='background-color:#F8FAFC; border:1px solid #CBD5E1; border-radius:8px; padding:20px; margin-top:15px; margin-bottom:15px;'>{st.session_state.monitoring_report}</div>", unsafe_allow_html=True)
+    st.markdown(f'<div class="ai-box">{st.session_state.monitoring_report}</div>', unsafe_allow_html=True)
     
     if st.button("카카오톡으로 모니터링 보고서 전송", type="primary"):
         headers = {"Authorization": "Bearer " + KAKAO_ACCESS_TOKEN}
@@ -919,8 +925,9 @@ if 'monitoring_report' in st.session_state and st.session_state.monitoring_repor
             if requests.post("https://kapi.kakao.com/v2/api/talk/memo/default/send", headers=headers, data=data).status_code == 200:
                 st.success("보고서 전송이 완료되었습니다.")
             else:
-                st.error("전송에 실패했습니다. 카카오톡 토큰을 확인해 주십시오.")
+                st.error("전송에 실패했습니다.")
         except:
             st.error("통신 장애로 인해 전송에 실패했습니다.")
 
 st.markdown('</div>', unsafe_allow_html=True)
+# ==========================================
