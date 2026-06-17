@@ -284,7 +284,7 @@ import altair as alt
 import firebase_admin
 from firebase_admin import credentials, firestore
 import streamlit as st
-import concurrent.futures  # ✨ 초고속 병렬 처리를 위한 5명의 가상 비서 도구
+import concurrent.futures
 
 # --- 🔥 파이어베이스 클라우드 연결 셋팅 ---
 if not firebase_admin._apps:
@@ -370,7 +370,7 @@ else:
 
 if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {stat_target_date})", key="place_sync_btn", type="primary"):
     with st.spinner("🚀 [초고속 병렬 엔진 가동] 네이버 서버에서 데이터를 스캔 중입니다... (최대 5배 빠름)"):
-        start_time = time.time() # 소요 시간 측정 시작
+        start_time = time.time() 
 
         all_camps, err = get_all_naver_campaigns()
         if err: 
@@ -388,7 +388,7 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                 camp_on = not (camp_lock in ["PAUSED", "STOPPED"] or camp_status in ["PAUSED", "STOPPED"])
                 res_list = []
                 try:
-                    time.sleep(0.05) # 네이버 차단 방지 최소 휴식
+                    time.sleep(0.05) 
                     req_ag = make_naver_request("GET", f"/ncc/adgroups?nccCampaignId={cid}")
                     with urllib.request.urlopen(req_ag, timeout=5) as res_ag:
                         adgroups = json.loads(res_ag.read().decode("utf-8"))
@@ -401,7 +401,6 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                     pass
                 return res_list
 
-            # 5개의 스레드가 동시에 네이버 서버에 요청
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 for res in executor.map(fetch_adgroup_parallel, place_camps):
                     master_place_adgroups.extend(res)
@@ -432,9 +431,12 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                 bid = max(active_bids) if active_bids else (max(paused_bids) if paused_bids else 0)
                 loc_cids_map[loc] = {"bid": bid, "is_on": final_on, "cids": cids_to_check}
                 
-            # ✨ 최적화 2단계: 과거 데이터 캐싱 및 통계 병렬 조회
+            # ✨ 최적화 2단계: 과거 데이터 캐싱 및 통계 병렬 조회 (스레드 충돌 완벽 방지)
             if 'api_stat_cache' not in st.session_state:
                 st.session_state.api_stat_cache = {}
+            
+            # 본부 메모리를 비서들에게 직접 주지 않고 '임시 장부'를 복사해서 줌
+            local_cache = st.session_state.api_stat_cache 
                 
             today_str = datetime.date.today().strftime('%Y-%m-%d')
             date_list = [(datetime.date.today() - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
@@ -445,24 +447,28 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
             for cid in cids_for_7d:
                 for d in date_list: stat_queries.add((cid, d))
 
-            def fetch_stat_with_cache(cid, date):
-                # 💡 핵심: 과거 데이터는 이미 기억(캐시)하고 있다면 네이버에 안 물어보고 0.1초 만에 꺼냄
-                if date != today_str and (cid, date) in st.session_state.api_stat_cache:
-                    return cid, date, st.session_state.api_stat_cache[(cid, date)]
+            def fetch_stat_with_cache(cid, date, cache_dict):
+                if date != today_str and (cid, date) in cache_dict:
+                    return cid, date, cache_dict[(cid, date)]
                 try:
                     time.sleep(0.05)
                     stat = fetch_campaign_stat_api(cid, date)
-                    if date != today_str: st.session_state.api_stat_cache[(cid, date)] = stat
                     return cid, date, stat
                 except Exception:
                     return cid, date, {'spend':0, 'clicks':0, 'avg_rank':0}
 
             stat_results_dict = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(fetch_stat_with_cache, q[0], q[1]) for q in stat_queries]
+                futures = [executor.submit(fetch_stat_with_cache, q[0], q[1], local_cache) for q in stat_queries]
                 for future in concurrent.futures.as_completed(futures):
                     c, d, stat = future.result()
                     stat_results_dict[(c, d)] = stat
+                    # 비서가 가져온 데이터를 본부(메인 스레드)에서 안전하게 기록
+                    if d != today_str:
+                        local_cache[(c, d)] = stat
+            
+            # 취합이 끝나면 본부 메모리에 한 번에 업데이트!
+            st.session_state.api_stat_cache = local_cache
             
             # ✨ 결과 조립
             for loc, ldata in loc_cids_map.items():
@@ -493,7 +499,6 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                 
             st.session_state.place_7d_flow = place_7d_data
             
-            # 성공 메시지 및 시간 측정
             end_time = time.time()
             st.success(f"⚡ 초고속 동기화 완료! (단 {end_time - start_time:.1f}초 소요)")
             time.sleep(1)
