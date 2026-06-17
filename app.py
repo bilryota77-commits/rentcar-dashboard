@@ -271,7 +271,7 @@ if st.session_state.df_clean_data is not None:
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. [2구역] 플레이스 광고 현황 (🔥 파이어베이스 클라우드 DB 영구 저장 완결판)
+# 2. [2구역] 플레이스 광고 현황 (🔥 초고속 병렬처리 + 캐싱 + 파이어베이스 완결판)
 # ==========================================
 import os
 import json
@@ -284,18 +284,17 @@ import altair as alt
 import firebase_admin
 from firebase_admin import credentials, firestore
 import streamlit as st
+import concurrent.futures  # ✨ 초고속 병렬 처리를 위한 5명의 가상 비서 도구
 
 # --- 🔥 파이어베이스 클라우드 연결 셋팅 ---
 if not firebase_admin._apps:
     try:
-        # secrets.toml에 저장해둔 파이어베이스 열쇠를 불러옵니다.
         key_dict = dict(st.secrets["firebase"])
         cred = credentials.Certificate(key_dict)
-        if not firebase_admin._apps: firebase_admin.initialize_app(cred)
+        firebase_admin.initialize_app(cred)
     except Exception as e:
         st.error(f"파이어베이스 인증 에러: secrets.toml 파일이 없거나 설정이 잘못되었습니다. ({e})")
 
-# db 변수 할당 (인증 성공 시)
 try:
     db = firestore.client()
 except:
@@ -345,7 +344,6 @@ with col1:
 with col2:
     st.metric(label="최근 7일 누적 플레이스 총 지출액 (비교용)", value=f"{total_place_spend_7days:,} 원")
 
-# 7일 지출 흐름 대형 UI
 st.markdown("<div style='font-size:16px; font-weight:bold; color:#475569; margin-top:15px; margin-bottom:10px;'>📅 최근 7일 플레이스 지출 흐름</div>", unsafe_allow_html=True)
 if 'place_7d_flow' in st.session_state and st.session_state.place_7d_flow:
     flow_cols = st.columns(7)
@@ -358,10 +356,7 @@ else:
 
 st.markdown("---")
 
-place_locations = [
-    "마곡", "가양", "양천향교", "김포공항", 
-    "강남", "안산", "인천", "일산"
-]
+place_locations = ["마곡", "가양", "양천향교", "김포공항", "강남", "안산", "인천", "일산"]
 
 st.markdown("<div style='font-size:14px; font-weight:bold; color:#334155; margin-bottom:5px;'>📅 데이터 조회 기준일 선택</div>", unsafe_allow_html=True)
 stat_option = st.radio("API 통계 추출 기준일 선택", ["오늘 (현재까지의 실시간 누적)", "어제 (최종 마감 팩트)"], horizontal=True, label_visibility="collapsed")
@@ -374,27 +369,26 @@ else:
     display_date_label = "어제"
 
 if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {stat_target_date})", key="place_sync_btn", type="primary"):
-    with st.spinner("네이버 서버에서 광고그룹 데이터를 스캔 중입니다..."):
+    with st.spinner("🚀 [초고속 병렬 엔진 가동] 네이버 서버에서 데이터를 스캔 중입니다... (최대 5배 빠름)"):
+        start_time = time.time() # 소요 시간 측정 시작
+
         all_camps, err = get_all_naver_campaigns()
         if err: 
             st.error(f"API 통신 장애: {err}")
         else:
-            place_camps = []
-            for c in all_camps:
-                c_name = str(c.get("name", "")).replace(" ", "")
-                c_type = str(c.get("campaignTp", c.get("type", ""))).upper()
-                if c_type in ["LOCAL_AD", "PLACE"] or any(x in c_name for x in ["플레이스", "플레", "지역"]):
-                    place_camps.append(c)
+            place_camps = [c for c in all_camps if str(c.get("campaignTp", c.get("type", ""))).upper() in ["LOCAL_AD", "PLACE"] or any(x in str(c.get("name", "")).replace(" ", "") for x in ["플레이스", "플레", "지역"])]
             
+            # ✨ 최적화 1단계: 광고그룹 병렬 조회 (멀티 스레드)
             master_place_adgroups = []
-            for p_camp in place_camps:
+            def fetch_adgroup_parallel(p_camp):
                 cid = p_camp.get("nccCampaignId")
                 camp_name = p_camp.get("name")
                 camp_lock = str(p_camp.get("userLock", "")).strip().upper()
                 camp_status = str(p_camp.get("status", "")).strip().upper()
                 camp_on = not (camp_lock in ["PAUSED", "STOPPED"] or camp_status in ["PAUSED", "STOPPED"])
+                res_list = []
                 try:
-                    time.sleep(0.15) 
+                    time.sleep(0.05) # 네이버 차단 방지 최소 휴식
                     req_ag = make_naver_request("GET", f"/ncc/adgroups?nccCampaignId={cid}")
                     with urllib.request.urlopen(req_ag, timeout=5) as res_ag:
                         adgroups = json.loads(res_ag.read().decode("utf-8"))
@@ -402,33 +396,32 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                             ag["_cid"] = cid
                             ag["_camp_name"] = camp_name
                             ag["_camp_on"] = camp_on
-                            master_place_adgroups.append(ag)
+                            res_list.append(ag)
                 except Exception:
                     pass
+                return res_list
+
+            # 5개의 스레드가 동시에 네이버 서버에 요청
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                for res in executor.map(fetch_adgroup_parallel, place_camps):
+                    master_place_adgroups.extend(res)
 
             results = {}
             cids_for_7d = []
+            loc_cids_map = {}
             
             for loc in place_locations:
-                active_bids = []
-                paused_bids = []
-                cids_to_check = []
+                active_bids, paused_bids, cids_to_check = [], [], []
                 is_any_on = False
-                
                 for ag in master_place_adgroups:
-                    c_name_clean = str(ag["_camp_name"]).replace(" ", "")
-                    ag_name_clean = str(ag.get("name", "")).replace(" ", "")
-                    
-                    if loc in c_name_clean or loc in ag_name_clean:
+                    if loc in str(ag["_camp_name"]).replace(" ", "") or loc in str(ag.get("name", "")).replace(" ", ""):
                         cid = ag["_cid"]
-                        if cid not in cids_to_check:
-                            cids_to_check.append(cid)
+                        if cid not in cids_to_check: cids_to_check.append(cid)
+                        if cid not in cids_for_7d: cids_for_7d.append(cid)
                         
-                        ag_lock = str(ag.get("userLock", "")).strip().upper()
-                        ag_status = str(ag.get("status", "")).strip().upper()
-                        ag_on = ag_lock not in ["PAUSED", "STOPPED"] and ag_status not in ["PAUSED", "STOPPED"]
-                        
+                        ag_on = str(ag.get("userLock", "")).strip().upper() not in ["PAUSED", "STOPPED"] and str(ag.get("status", "")).strip().upper() not in ["PAUSED", "STOPPED"]
                         ag_bid = int(ag.get("bidAmt", 0))
+                        
                         if ag["_camp_on"] and ag_on:
                             active_bids.append(ag_bid)
                             is_any_on = True
@@ -436,56 +429,79 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                             paused_bids.append(ag_bid)
                 
                 final_on = is_any_on
-                bid = 0
-                if active_bids:
-                    bid = max(active_bids)
-                elif paused_bids:
-                    bid = max(paused_bids)
+                bid = max(active_bids) if active_bids else (max(paused_bids) if paused_bids else 0)
+                loc_cids_map[loc] = {"bid": bid, "is_on": final_on, "cids": cids_to_check}
                 
-                tot_spend, tot_clicks = 0, 0
-                sum_rank, active_rank_cnt = 0.0, 0
+            # ✨ 최적화 2단계: 과거 데이터 캐싱 및 통계 병렬 조회
+            if 'api_stat_cache' not in st.session_state:
+                st.session_state.api_stat_cache = {}
                 
-                for cid in cids_to_check:
-                    stat_data = fetch_campaign_stat_api(cid, stat_target_date)
-                    tot_spend += stat_data['spend']
-                    tot_clicks += stat_data['clicks']
-                    if stat_data['avg_rank'] > 0:
-                        sum_rank += stat_data['avg_rank']
+            today_str = datetime.date.today().strftime('%Y-%m-%d')
+            date_list = [(datetime.date.today() - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
+            
+            stat_queries = set()
+            for loc, ldata in loc_cids_map.items():
+                for cid in ldata["cids"]: stat_queries.add((cid, stat_target_date))
+            for cid in cids_for_7d:
+                for d in date_list: stat_queries.add((cid, d))
+
+            def fetch_stat_with_cache(cid, date):
+                # 💡 핵심: 과거 데이터는 이미 기억(캐시)하고 있다면 네이버에 안 물어보고 0.1초 만에 꺼냄
+                if date != today_str and (cid, date) in st.session_state.api_stat_cache:
+                    return cid, date, st.session_state.api_stat_cache[(cid, date)]
+                try:
+                    time.sleep(0.05)
+                    stat = fetch_campaign_stat_api(cid, date)
+                    if date != today_str: st.session_state.api_stat_cache[(cid, date)] = stat
+                    return cid, date, stat
+                except Exception:
+                    return cid, date, {'spend':0, 'clicks':0, 'avg_rank':0}
+
+            stat_results_dict = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(fetch_stat_with_cache, q[0], q[1]) for q in stat_queries]
+                for future in concurrent.futures.as_completed(futures):
+                    c, d, stat = future.result()
+                    stat_results_dict[(c, d)] = stat
+            
+            # ✨ 결과 조립
+            for loc, ldata in loc_cids_map.items():
+                tot_spend, tot_clicks, sum_rank, active_rank_cnt = 0, 0, 0.0, 0
+                for cid in ldata["cids"]:
+                    stat = stat_results_dict.get((cid, stat_target_date), {'spend':0, 'clicks':0, 'avg_rank':0})
+                    tot_spend += stat['spend']
+                    tot_clicks += stat['clicks']
+                    if stat['avg_rank'] > 0:
+                        sum_rank += stat['avg_rank']
                         active_rank_cnt += 1
-                    if cid not in cids_for_7d:
-                        cids_for_7d.append(cid)
-                
-                avg_rank_final = sum_rank / active_rank_cnt if active_rank_cnt > 0 else 0.0
                 
                 results[loc] = {
-                    "bid": bid,
-                    "is_on": final_on,
-                    "avg_rank": avg_rank_final,
-                    "spend": tot_spend,
-                    "clicks": tot_clicks,
-                    "date_label": display_date_label
+                    "bid": ldata["bid"], "is_on": ldata["is_on"],
+                    "avg_rank": sum_rank / active_rank_cnt if active_rank_cnt > 0 else 0.0,
+                    "spend": tot_spend, "clicks": tot_clicks, "date_label": display_date_label
                 }
                 
             st.session_state.place_diagnosis_data = results
             
-            today_dt = datetime.date.today()
-            date_list = [(today_dt - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
             place_7d_data = {d: 0 for d in date_list}
-            
             for d in date_list:
                 day_spend = 0
                 for cid in cids_for_7d:
-                    stat = fetch_campaign_stat_api(cid, d)
+                    stat = stat_results_dict.get((cid, d), {'spend':0, 'clicks':0, 'avg_rank':0})
                     day_spend += stat['spend']
                 place_7d_data[d] = day_spend
                 
             st.session_state.place_7d_flow = place_7d_data
+            
+            # 성공 메시지 및 시간 측정
+            end_time = time.time()
+            st.success(f"⚡ 초고속 동기화 완료! (단 {end_time - start_time:.1f}초 소요)")
+            time.sleep(1)
             st.rerun()
 
 if not st.session_state.get('place_diagnosis_data'):
     st.info("👆 위 동기화 버튼을 눌러 네이버 공식 데이터를 연동해 주십시오.")
 else:
-    # 파이어베이스에서 저장된 순위 팩트 불러오기
     saved_ranks_dict = load_place_ranks()
     
     cols = st.columns(4)
@@ -502,16 +518,13 @@ else:
             
             current_saved_rank = saved_ranks_dict.get(loc, "미입력 (API 기준)")
             options_list = ["미입력 (API 기준)", "1위", "2위", "3위", "순위 밖"]
-            try:
-                selected_idx = options_list.index(current_saved_rank)
-            except:
-                selected_idx = 0
+            try: selected_idx = options_list.index(current_saved_rank)
+            except: selected_idx = 0
                 
             override_val = st.selectbox("수동 오버라이드 (순위 덮어쓰기)", options_list, index=selected_idx, key=f"sb_{loc}")
             
             if override_val != current_saved_rank:
                 saved_ranks_dict[loc] = override_val
-                # 파이어베이스에 즉시 저장
                 save_place_ranks(saved_ranks_dict)
                 st.rerun()
 
@@ -525,49 +538,35 @@ else:
 
             current_label = data.get('date_label', '어제')
             api_label_text = '[수동 개입] 현재 실시간 팩트' if is_manual else f'네이버 공식 API ({current_label} 평균)'
-            txt_bid = f"{data.get('bid', 0):,}"
-            txt_on_off = 'ON' if data.get('is_on') else 'OFF'
-            txt_spend = f"{data.get('spend', 0):,}"
-            txt_clicks = str(data.get('clicks', 0))
-
+            
             st.markdown(f"""
             <div style="background-color:{bg}; border:2px solid {border}; border-radius:8px; padding:12px; text-align:center; margin-bottom:10px;">
                 <div style="font-size:11px; color:{text}; margin-bottom:2px;">{api_label_text}</div>
                 <div style="font-size:18px; font-weight:bold; color:{text};">{display_rank}</div>
             </div>
             <div style='font-size:12px; color:#334155; line-height:1.6; background:#F1F5F9; padding:8px; border-radius:4px;'>
-                - 단가: <b>{txt_bid}원</b> ({txt_on_off})<br>
-                - {current_label} 비용: <b>{txt_spend}원</b><br>
-                - 클릭 유입: <b>{txt_clicks}건</b>
+                - 단가: <b>{data.get('bid', 0):,}원</b> ({'ON' if data.get('is_on') else 'OFF'})<br>
+                - {current_label} 비용: <b>{data.get('spend', 0):,}원</b><br>
+                - 클릭 유입: <b>{data.get('clicks', 0)}건</b>
             </div>
             """, unsafe_allow_html=True)
             
             advice = ""
             current_rank_val = 99 if ("밖" in display_rank or (not is_manual and data['avg_rank'] > 3.0)) else float(re.findall(r"[\d.]+", display_rank)[0]) if re.findall(r"[\d.]+", display_rank) else 99
-            
             current_hour = datetime.datetime.now().hour
             pacing_warn = "<br><br><b>[예산 페이스 조절]</b> 오전 소진 속도가 과도합니다. 단가를 10% 하향 조절하십시오." if (current_hour <= 13 and data['spend'] >= 15000) else ""
 
-            if data['bid'] >= 4500 and current_rank_val >= 3:
-                advice = f"<b>[품질지수 보정]</b> 단가 상한선 임박. 가격 경쟁을 중단하고 문구를 <u>'추가금 0원'</u>으로 변경하여 클릭률을 유도하십시오.{pacing_warn}"
-            elif current_rank_val <= 2.0 and data['clicks'] <= 2 and data['spend'] > 0:
-                advice = f"<b>[상품군 스위칭]</b> 상단 노출 대비 유입 저조. <b>C1(법인) 또는 C3(저신용 장기)</b> 영업용 피드로 교체하십시오.{pacing_warn}"
+            if data['bid'] >= 4500 and current_rank_val >= 3: advice = f"<b>[품질지수 보정]</b> 단가 상한선 임박. 가격 경쟁을 중단하고 문구를 <u>'추가금 0원'</u>으로 변경하십시오.{pacing_warn}"
+            elif current_rank_val <= 2.0 and data['clicks'] <= 2 and data['spend'] > 0: advice = f"<b>[상품군 스위칭]</b> 유입 저조. <b>C1(법인) 또는 C3(저신용)</b> 영업용 피드로 교체하십시오.{pacing_warn}"
             elif loc in ["마곡", "가양", "양천향교"]:
-                if current_rank_val <= 1.5: 
-                    advice = f"<b>[코어 장악 및 확장]</b> 독점 중. <u>영등포, 구로, 마포</u> 권역까지 노출 범위를 넓혀 광역 수요를 흡수하십시오.{pacing_warn}"
-                else: 
-                    advice = f"<b>[우회 전술]</b> 경쟁 과열. 반경 2km 내 <b>화곡역, 등촌동, 신월동</b> 타겟팅을 침투시키십시오.{pacing_warn}"
-            elif loc == "김포공항":
-                advice = f"<b>[타 지역 인터셉트]</b> 검색 수요 전국구. 노출 지역에 <b>'인천 계양구, 부천 대장동, 일산 동구'</b>를 강제 연동하십시오."
-            elif loc in ["인천", "안산", "일산"]:
-                advice = f"<b>[광역 공백 방어]</b> 유입 밀림 시 인접 배후 지역까지 노출 범위를 과감히 넓혀 유입 총량을 방어하십시오.{pacing_warn}"
+                if current_rank_val <= 1.5: advice = f"<b>[코어 장악 및 확장]</b> 독점 중. <u>영등포, 구로</u> 권역까지 범위를 넓혀 수요를 흡수하십시오.{pacing_warn}"
+                else: advice = f"<b>[우회 전술]</b> 경쟁 과열. 반경 2km 내 <b>화곡역, 등촌동</b> 타겟팅을 침투시키십시오.{pacing_warn}"
+            elif loc == "김포공항": advice = f"<b>[타 지역 인터셉트]</b> 검색 수요 전국구. 노출 지역에 <b>'인천 계양구, 일산 동구'</b>를 강제 연동하십시오."
+            elif loc in ["인천", "안산", "일산"]: advice = f"<b>[광역 공백 방어]</b> 유입 밀림 시 인접 배후 지역까지 노출 범위를 과감히 넓히십시오.{pacing_warn}"
             elif loc == "강남":
-                if current_rank_val <= 2.0:
-                    advice = f"<b>[비즈니스 확장]</b> <b>서초구, 송파구, 판교 테크노밸리</b>까지 패키지로 확장하여 객단가를 극대화하십시오."
-                else:
-                    advice = f"<b>[우회]</b> 경쟁 밀림 시 <u>'서초 장기렌트카'</u> 등 인접 롱테일 키워드로 전환해 실속 유입을 챙기십시오.{pacing_warn}"
-            else:
-                advice = f"<b>[신규 모니터링]</b> 배후 타 지역 계약 전환율을 추적하고, 정체 시 즉시 <b>C3(무심사)</b> 피드로 방어하십시오.{pacing_warn}"
+                if current_rank_val <= 2.0: advice = f"<b>[비즈니스 확장]</b> <b>서초구, 판교</b>까지 패키지로 확장하여 객단가를 극대화하십시오."
+                else: advice = f"<b>[우회]</b> 경쟁 밀림 시 <u>'서초 장기렌트카'</u> 등 인접 롱테일 키워드로 전환하십시오.{pacing_warn}"
+            else: advice = f"<b>[신규 모니터링]</b> 정체 시 즉시 <b>C3(무심사)</b> 피드로 방어하십시오.{pacing_warn}"
 
             st.markdown(f"<div style='font-size:12px; background-color:#FFFBEB; padding:10px; border-left:4px solid #D97706; margin-top:8px; border-radius:4px; line-height:1.6;'><b>[마스터 작전 지침]</b><br>{advice}</div>", unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True)
@@ -576,32 +575,20 @@ else:
     st.markdown("<h3 style='font-size:18px; color:#1E3A8A; font-weight:bold;'>📈 플레이스 통합 리포트</h3>", unsafe_allow_html=True)
     
     col_chart, col_table = st.columns([1, 1])
-    
     with col_chart:
         if 'place_7d_flow' in st.session_state and st.session_state.place_7d_flow:
-            flow_records = [{"일자": d, "소진액": v} for d, v in st.session_state.place_7d_flow.items()]
-            flow_df = pd.DataFrame(flow_records).sort_values("일자")
+            flow_df = pd.DataFrame([{"일자": d, "소진액": v} for d, v in st.session_state.place_7d_flow.items()]).sort_values("일자")
             st.markdown("<div style='font-size:14px; font-weight:bold; color:#EA580C; margin-bottom:10px;'>지점별 플레이스 일자별 총 소진액 흐름</div>", unsafe_allow_html=True)
-            # 차트 X축 글씨 수평으로 고정 (labelAngle=0)
             place_chart = alt.Chart(flow_df).mark_bar(color="#EA580C").encode(x=alt.X("일자:N", axis=alt.Axis(labelAngle=0)), y=alt.Y("소진액:Q"), tooltip=["일자:N", alt.Tooltip("소진액:Q", format=",")]).properties(height=250)
             st.altair_chart(place_chart, use_container_width=True)
             
     with col_table:
         st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E3A8A; margin-bottom:10px;'>현재 시점 지점별 요약 테이블</div>", unsafe_allow_html=True)
-        summary_records = []
-        for loc, data in st.session_state.place_diagnosis_data.items():
-            summary_records.append({
-                "지점명": loc,
-                "현재단가": f"{data.get('bid', 0):,}원",
-                "소진비용": f"{data.get('spend', 0):,}원",
-                "클릭수": f"{data.get('clicks', 0)}건",
-                "순위상태": saved_ranks_dict.get(loc, "미입력")
-            })
-        if summary_records:
-            st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
+        summary_records = [{"지점명": loc, "현재단가": f"{data.get('bid', 0):,}원", "소진비용": f"{data.get('spend', 0):,}원", "클릭수": f"{data.get('clicks', 0)}건", "순위상태": saved_ranks_dict.get(loc, "미입력")} for loc, data in st.session_state.place_diagnosis_data.items()]
+        if summary_records: st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
-
+# ==========================================
 
 # ==========================================
 # 3. [3구역] 파워링크 광고 현황 (버튼 길이 축소 및 차트 수평 정렬)
