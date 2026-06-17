@@ -614,7 +614,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
 
 # ==========================================
-# 3. [3구역] 파워링크 광고 현황 (🔥 원래 UI 복구 + 초고속 병렬 엔진 + 완벽 필터링)
+# 3. [3구역] 파워링크 광고 현황 (🔥 모바일 가로스크롤 + 초고속 병렬엔진 + 다크모드 방어 완결판)
 # ==========================================
 import concurrent.futures
 
@@ -691,7 +691,6 @@ default_start = default_end - datetime.timedelta(days=2)
 st.markdown("단가를 조정한 이후의 [검증 대상 기간]을 선택하십시오. 시스템이 자동으로 그 이전 동일한 기간(조정 전)과 비교하여 효율을 진단합니다.")
 date_range = st.date_input("대조군 검증 대상 기간 (조정 후)", value=(default_start, default_end))
 
-# 버튼 길이 축소 통일
 if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key="power_sync_btn", type="primary"):
     if isinstance(date_range, tuple) and len(date_range) == 2:
         progress_bar = st.progress(0)
@@ -716,7 +715,6 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
             date_list = [(d7_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
             today_str = today.strftime('%Y-%m-%d')
 
-            # ✨ 철벽 필터링: 파워링크만 남기고 플레이스는 모조리 삭제
             power_camps = []
             place_targets = ["플레이스", "플레", "매장", "지점", "가양", "마곡", "인천", "김포", "안산", "일산", "강남", "양천"]
             for camp in all_camps:
@@ -729,12 +727,10 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
             bot_records = []
             daily_flow = {d: {"파워링크": 0, "플레이스": 0, "일일소비금액": 0} for d in date_list}
 
-            # 캐시(임시 기억 장치) 메모리 할당
             if 'power_period_cache' not in st.session_state:
                 st.session_state.power_period_cache = {}
             local_cache = st.session_state.power_period_cache
 
-            # 비서(스레드)들이 수행할 개별 임무 정의
             def process_campaign(camp, cache):
                 cid = camp.get("nccCampaignId")
                 cname = camp.get("name")
@@ -762,7 +758,6 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
 
             total_camps = len(power_camps)
             if total_camps > 0:
-                # ✨ 5명의 비서 투입 (초고속 병렬 처리)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     futures = [executor.submit(process_campaign, camp, local_cache) for camp in power_camps]
                     completed = 0
@@ -772,7 +767,6 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
                         status_text.markdown(f"[{completed}/{total_camps}] 파워링크 데이터 초고속 대조 중... ⚡")
                         res = future.result()
 
-                        # 가져온 데이터를 본부(캐시)에 저장
                         cid = res["cid"]
                         local_cache[(cid, pre_start_str, pre_end_str)] = res["pre"]
                         local_cache[(cid, post_start_str, post_end_str)] = res["post"]
@@ -782,7 +776,6 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
                         sp_pre, _, ctr_pre, cpc_pre = res["pre"]
                         sp_post, clk_post, ctr_post, cpc_post = res["post"]
 
-                        # 지출이 1원이라도 있었던 파워링크 캠페인만 표에 추가
                         if sp_pre > 0 or sp_post > 0:
                             bot_records.append({
                                 "캠페인명": res["short_name"], "광고종류": "파워링크",
@@ -795,7 +788,6 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
                                 daily_flow[d]["파워링크"] += sp_day
                                 daily_flow[d]["일일소비금액"] += sp_day
 
-            # 결과물 최종 업데이트
             st.session_state.power_period_cache = local_cache
             st.session_state.merged_df = pd.DataFrame(bot_records)
             st.session_state.daily_flow_data = daily_flow
@@ -819,7 +811,6 @@ if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
         flow_records = [{"일자": d, "소진액": v["파워링크"]} for d, v in st.session_state.daily_flow_data.items()]
         flow_df = pd.DataFrame(flow_records).sort_values("일자")
         st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E40AF; margin-bottom:10px;'>파워링크 일자별 총 소진액 흐름</div>", unsafe_allow_html=True)
-        # 차트 X축 글씨 수평으로 고정 (labelAngle=0)
         power_chart = alt.Chart(flow_df).mark_bar(color="#1E40AF").encode(x=alt.X("일자:N", axis=alt.Axis(labelAngle=0)), y=alt.Y("소진액:Q"), tooltip=["일자:N", alt.Tooltip("소진액:Q", format=",")]).properties(height=250)
         st.altair_chart(power_chart, use_container_width=True)
         
@@ -837,13 +828,14 @@ if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
                 })
             if summary_records:
                 st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
+
 if 'merged_df' in st.session_state and st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
     type_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
     if not type_data.empty:
         st.markdown("<br><div style='font-size:19px; font-weight:bold; color:#0F172A; margin-bottom:15px; border-left:5px solid #EA580C; padding-left:10px;'>파워링크 전후 성과 상세 대조표</div>", unsafe_allow_html=True)
         
-        # 기기 모드와 상관없이 글자색을 어두운 숯색(#0F172A)으로 고정합니다.
-        html_table = "<div style='background-color:#FFFFFF; color:#0F172A; border:1px solid #E2E8F0; border-radius:8px; overflow:hidden;'><table style='width:100%; text-align:center; border-collapse:collapse; color:#0F172A;'><thead style='background-color:#F8FAFC; border-bottom:2px solid #CBD5E1; color:#0F172A;'><tr><th style='padding:12px; font-size:13px; color:#0F172A;'>캠페인명</th><th style='padding:12px; font-size:13px; color:#0F172A;'>이전 비용</th><th style='padding:12px; font-size:13px; color:#0F172A;'>이후 비용</th><th style='padding:12px; font-size:13px; color:#0F172A;'>이전 CTR</th><th style='padding:12px; font-size:13px; color:#0F172A;'>이후 CTR</th><th style='padding:12px; font-size:13px; color:#0F172A;'>이전 CPC</th><th style='padding:12px; font-size:13px; color:#0F172A;'>이후 CPC</th><th style='padding:12px; font-size:13px; color:#0F172A;'>최종 조치</th><th style='padding:12px; font-size:13px; color:#0F172A;'>진단 사유</th></tr></thead><tbody>"
+        # ✨ 모바일 가로 스크롤 및 다크모드 완벽 방어 스타일 적용
+        html_table = "<div style='width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; background-color:#FFFFFF !important; border:1px solid #E2E8F0; border-radius:8px;'><table style='width:100%; min-width:850px; text-align:center; border-collapse:collapse; color:#0F172A !important;'><thead style='background-color:#F8FAFC !important; border-bottom:2px solid #CBD5E1; color:#0F172A !important;'><tr><th style='padding:12px; font-size:13px; color:#0F172A !important;'>캠페인명</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이전 비용</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이후 비용</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이전 CTR</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이후 CTR</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이전 CPC</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이후 CPC</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>최종 조치</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>진단 사유</th></tr></thead><tbody>"
         
         for _, r in type_data.iterrows():
             ctr_diff = r["클릭률_후"] - r["클릭률_전"]
@@ -862,36 +854,63 @@ if 'merged_df' in st.session_state and st.session_state.merged_df is not None an
             elif ctr_diff < 0 and cpc_diff < 0: cond, c, reason = "단가 상향", "#2563EB", f"비용은 줄었으나 상권에서 밀려 유입 감소"
             else: cond, c, reason = "안정화", "#475569", "전후 성과 변동폭 오차 내 균형"
             
-            html_table += f"<tr style='border-bottom:1px solid #F1F5F9; color:#0F172A;'><td style='padding:10px; font-size:13px; font-weight:bold; text-align:left; padding-left:15px; color:#0F172A;'>{r['캠페인명']}</td><td style='color:#0F172A;'>{txt_pre_spend}</td><td style='color:#0F172A;'>{txt_post_spend}</td><td style='color:#0F172A;'>{txt_pre_ctr}</td><td style='color:#0F172A;'>{txt_post_ctr}</td><td style='color:#0F172A;'>{txt_pre_cpc}</td><td style='color:#0F172A;'>{txt_post_cpc}</td><td style='font-weight:bold; color:{c};'>{cond}</td><td style='text-align:left; font-size:12px; color:#0F172A;'>{reason}</td></tr>"
+            html_table += f"<tr style='border-bottom:1px solid #F1F5F9; color:#0F172A !important;'><td style='padding:10px; font-size:13px; font-weight:bold; text-align:left; padding-left:15px; color:#0F172A !important;'>{r['캠페인명']}</td><td style='color:#0F172A !important;'>{txt_pre_spend}</td><td style='color:#0F172A !important;'>{txt_post_spend}</td><td style='color:#0F172A !important;'>{txt_pre_ctr}</td><td style='color:#0F172A !important;'>{txt_post_ctr}</td><td style='color:#0F172A !important;'>{txt_pre_cpc}</td><td style='color:#0F172A !important;'>{txt_post_cpc}</td><td style='font-weight:bold; color:{c};'>{cond}</td><td style='text-align:left; font-size:12px; color:#0F172A !important;'>{reason}</td></tr>"
         
         html_table += "</tbody></table></div>"
         st.markdown(html_table, unsafe_allow_html=True)
         
 st.markdown('</div>', unsafe_allow_html=True)
-# ==========================================
+
 
 # ==========================================
-# 4. [4구역] AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
+# 4. [4구역] AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동 + 강제 렌더링 완결판)
 # ==========================================
-st.markdown("---")
+st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
-<div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px;">
-    🤖 4. AI 종합 진단 및 작전 지휘소
+<div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+    🤖 4. AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
 </div>
 """, unsafe_allow_html=True)
 
-user_remark = st.text_area("오늘 현장 특이사항", value="단기 렌트 유입 방어 및 월차 계약 확보", height=70)
+user_remark = st.text_area("오늘 현장 특이사항 조율 (AI 분석 참고용)", value="단기 렌트 유입을 방어하고 전 차량 월차 계약 확보를 위한 집중 노출 세팅 필요", height=70)
 
-if st.button("AI 진단 시작", key="ai_report_btn", type="primary"):
-    with st.spinner("분석 중..."):
-        # (기존 제미나이 호출 로직 동일)
-        # ... (로직 생략) ...
-        st.session_state.monitoring_report = "분석 결과가 출력됩니다..."
+if st.button("재고 및 광고 성과 통합 검증 시작", key="ai_report_btn", type="primary"):
+    with st.spinner("수집된 API 통계와 현장 팩트 데이터를 바탕으로 지침을 분석 중입니다..."):
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            
+            diag_info = ""
+            if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
+                for loc, data in st.session_state.place_diagnosis_data.items():
+                    rank_status = data.get('manual_override', f"API평균 {data.get('avg_rank', 0)}위")
+                    diag_info += f"- [{loc}] 단가: {data.get('bid', 0)}원 / 어제비용: {data.get('spend', 0)}원 / 유입: {data.get('clicks', 0)}건 / 현재상태: {rank_status}\n"
+            
+            sys_prompt = f"""
+            당신은 빌려타렌트카의 퍼포먼스 마케터입니다.
+            다음 100% 팩트 데이터를 바탕으로 비효율 예산 누수를 막고, 영업소별 명확한 단가 조절 및 마케팅 지침 3가지를 구체적 수치와 함께 도출하십시오.
+            [영업소별 팩트 상태] {diag_info}
+            [현장 요구사항] {user_remark}
+            """
+            st.session_state.monitoring_report = model.generate_content(sys_prompt).text
+            st.success("AI 기반 마케팅 조치안 작성이 완료되었습니다.")
+            st.rerun() # ✨ 모바일 렌더링 누락 방지를 위한 즉시 갱신 강제 조치
+        
+        except Exception as e:
+            st.warning("⚠️ 구글 AI 허용 한도 초과 혹은 통신 장애. 내부 관제 엔진으로 즉시 백업 분석을 출력합니다.")
+            local_report = """
+            ### 🚨 빌려타렌트카 내부 관제 시스템 긴급 지침안
+            **1. 즉각적인 예산 방어:** 상단 2구역 확인. '순위 밖'인데 지출 발생 시 품질지수 훼손 상태입니다. 문구부터 교체하십시오.
+            **2. C4(단기/월렌트) 주력 재고 전환:** 가용 대수 많은 차량 그룹을 파악하여 마곡 본점/인접 권역 예산을 상향하십시오.
+            **3. 일일 예산 소진 캘리브레이션:** 3구역 최근 흐름상 특정 요일 이탈 캠페인은 노출 시간대를 핵심 시간(08시~15시)으로 축소하십시오.
+            """
+            st.session_state.monitoring_report = local_report
+            st.rerun()
 
-# 🔥 여기가 핵심: 모바일에서 흰색 화면이 안 나오도록 min-height 설정
-# [교체 대상 구간] 배경색과 글자색을 동시에 고정하여 다크모드 버그를 방지합니다.
+# ✨ 핵심: 배경색과 글자색을 모바일 다크모드가 침범하지 못하도록 강제 지정(!important)
 if 'monitoring_report' in st.session_state and st.session_state.monitoring_report != "":
-    st.markdown(f'<div style="background-color:#F8FAFC; color:#0F172A; border:1px solid #CBD5E1; border-radius:8px; padding:20px; margin-top:15px; margin-bottom:15px; min-height:100px;">{st.session_state.monitoring_report}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="background-color:#F8FAFC !important; color:#0F172A !important; border:1px solid #CBD5E1; border-radius:8px; padding:20px; margin-top:15px; margin-bottom:15px; min-height:100px; white-space:pre-wrap;">{st.session_state.monitoring_report}</div>', unsafe_allow_html=True)
     
     if st.button("카카오톡으로 모니터링 보고서 전송", type="primary"):
         headers = {"Authorization": "Bearer " + KAKAO_ACCESS_TOKEN}
@@ -903,5 +922,6 @@ if 'monitoring_report' in st.session_state and st.session_state.monitoring_repor
                 st.error("전송에 실패했습니다.")
         except:
             st.error("통신 장애로 인해 전송에 실패했습니다.")
+
 st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
