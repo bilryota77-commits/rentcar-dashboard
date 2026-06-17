@@ -596,240 +596,261 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
 
 # ==========================================
-# 3. [3구역] 파워링크 광고 현황 (⚡ 초고속 병렬처리 + 완벽한 필터링)
+# 3. [3구역] 파워링크 광고 현황 (🔥 원래 UI 복구 + 초고속 병렬 엔진 + 완벽 필터링)
 # ==========================================
+import concurrent.futures
+
+def fetch_period_stat_api(camp_id, start_dt, end_dt):
+    time_range_str = f'{{"since":"{start_dt}","until":"{end_dt}"}}'
+    uri = f"/stats?idType=CAMPAIGN&id={camp_id}&fields=%5B%22clkCnt%22%2C%22impCnt%22%2C%22salesAmt%22%5D&timeRange={urllib.parse.quote(time_range_str)}"
+    
+    spend, imp, clk = 0, 0, 0
+    for _ in range(3):
+        try:
+            req = make_naver_request("GET", uri)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.getcode() == 200:
+                    raw_json = json.loads(response.read().decode("utf-8"))
+                    stat_list = raw_json.get("data", []) if isinstance(raw_json, dict) else raw_json
+                    if stat_list:
+                        for row in stat_list:
+                            spend += int(float(row.get("salesAmt", 0)))
+                            imp += int(float(row.get("impCnt", 0)))
+                            clk += int(float(row.get("clkCnt", 0)))
+                    break
+        except Exception:
+            time.sleep(0.5)
+            
+    ctr = (clk / imp * 100) if imp > 0 else 0.0
+    cpc = int(spend / clk) if clk > 0 else 0
+    return spend, clk, ctr, cpc
+
 st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
-<div style="background: linear-gradient(90deg, #047857, #10B981); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-    🚀 3. 파워링크 광고 현황
+<div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+    3. 파워링크 광고 현황
 </div>
 """, unsafe_allow_html=True)
 
-# 지출 요약 표시
-total_power_spend_selected = 0
-power_current_label = "조회 전"
-if 'powerlink_diagnosis_data' in st.session_state and st.session_state.powerlink_diagnosis_data:
-    for loc, data in st.session_state.powerlink_diagnosis_data.items():
-        total_power_spend_selected += data.get("spend", 0)
-        power_current_label = data.get('date_label', '어제/오늘')
-
+total_power_spend_today = 0
 total_power_spend_7days = 0
-if 'powerlink_7d_flow' in st.session_state and st.session_state.powerlink_7d_flow:
-    for d, spend in st.session_state.powerlink_7d_flow.items():
+
+if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
+    sorted_dates = sorted(st.session_state.daily_flow_data.keys())
+    for d in sorted_dates:
+        spend = st.session_state.daily_flow_data[d].get("파워링크", 0)
         total_power_spend_7days += spend
+        
+    today_str = datetime.date.today().strftime('%Y-%m-%d')
+    if today_str in st.session_state.daily_flow_data:
+        total_power_spend_today = st.session_state.daily_flow_data[today_str].get("파워링크", 0)
+    elif sorted_dates:
+        total_power_spend_today = st.session_state.daily_flow_data[sorted_dates[-1]].get("파워링크", 0)
 
-p_col1, p_col2 = st.columns(2)
-with p_col1:
-    st.metric(label=f"선택일 기준 ({power_current_label}) 파워링크 총 지출액", value=f"{total_power_spend_selected:,} 원")
-with p_col2:
-    st.metric(label="최근 7일 누적 파워링크 총 지출액 (비교용)", value=f"{total_power_spend_7days:,} 원")
+col1, col2 = st.columns(2)
+with col1:
+    st.metric(label="오늘(최근) 파워링크 총 지출액", value=f"{total_power_spend_today:,} 원")
+with col2:
+    st.metric(label="최근 7일 누적 파워링크 총 지출액", value=f"{total_power_spend_7days:,} 원")
 
+# 7일 지출 흐름 대형 UI
 st.markdown("<div style='font-size:16px; font-weight:bold; color:#475569; margin-top:15px; margin-bottom:10px;'>📅 최근 7일 파워링크 지출 흐름</div>", unsafe_allow_html=True)
-if 'powerlink_7d_flow' in st.session_state and st.session_state.powerlink_7d_flow:
-    p_flow_cols = st.columns(7)
-    for i, (d, spend) in enumerate(sorted(st.session_state.powerlink_7d_flow.items())):
+if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
+    flow_cols = st.columns(7)
+    for i, d in enumerate(sorted(st.session_state.daily_flow_data.keys())):
         short_date = d.split("-")[1] + "/" + d.split("-")[2]
-        with p_flow_cols[i]:
+        spend = st.session_state.daily_flow_data[d].get("파워링크", 0)
+        with flow_cols[i]:
             st.metric(label=short_date, value=f"{spend:,}원")
 else:
     st.markdown("<div style='color:#94A3B8; font-size:13px;'>동기화 버튼을 누르면 일자별 흐름이 표시됩니다.</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
-power_locations = ["마곡", "가양", "양천향교", "김포공항", "강남", "안산", "인천", "일산"]
-power_stat_option = st.radio("파워링크 API 통계 기준일", ["오늘 (현재까지의 실시간 누적)", "어제 (최종 마감 팩트)"], horizontal=True, key="power_radio", label_visibility="collapsed")
+default_end = datetime.date.today() - datetime.timedelta(days=1)
+default_start = default_end - datetime.timedelta(days=2)
 
-if "오늘" in power_stat_option:
-    p_stat_target_date = datetime.date.today().strftime('%Y-%m-%d')
-    p_display_date_label = "오늘"
-else:
-    p_stat_target_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-    p_display_date_label = "어제"
+st.markdown("단가를 조정한 이후의 [검증 대상 기간]을 선택하십시오. 시스템이 자동으로 그 이전 동일한 기간(조정 전)과 비교하여 효율을 진단합니다.")
+date_range = st.date_input("대조군 검증 대상 기간 (조정 후)", value=(default_start, default_end))
 
-if st.button(f"🚀 파워링크 공식 성적표 100% 동기화 (기준일: {p_stat_target_date})", key="power_sync_btn", type="primary"):
-    with st.spinner("⚡ [초고속 병렬 엔진 가동] 파워링크 전용 데이터를 스캔 중입니다..."):
-        start_time = time.time() 
+# 버튼 길이 축소 통일
+if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key="power_sync_btn", type="primary"):
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        post_start_dt, post_end_dt = date_range[0], date_range[1]
+        duration_days = (post_end_dt - post_start_dt).days + 1
+        pre_end_dt = post_start_dt - datetime.timedelta(days=1)
+        pre_start_dt = pre_end_dt - datetime.timedelta(days=duration_days - 1)
+        
+        post_start_str, post_end_str = post_start_dt.strftime('%Y-%m-%d'), post_end_dt.strftime('%Y-%m-%d')
+        pre_start_str, pre_end_str = pre_start_dt.strftime('%Y-%m-%d'), pre_end_dt.strftime('%Y-%m-%d')
+        
+        st.session_state.date_period_info = f"[조정 전] {pre_start_str} ~ {pre_end_str} vs [조정 후] {post_start_str} ~ {post_end_str}"
+        
+        status_text.markdown("캠페인 리스트를 불러오고 있습니다...")
+        all_camps, _ = get_all_naver_campaigns()
+        
+        if all_camps:
+            today = datetime.date.today()
+            d7_start = today - datetime.timedelta(days=6)
+            date_list = [(d7_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
+            today_str = today.strftime('%Y-%m-%d')
 
-        all_camps, err = get_all_naver_campaigns()
-        if err: 
-            st.error(f"API 통신 장애: {err}")
-        else:
-            # ✨ 핵심: 플레이스 완벽 배제, 파워링크(WEB_SITE)만 추출
+            # ✨ 철벽 필터링: 파워링크만 남기고 플레이스는 모조리 삭제
             power_camps = []
-            for c in all_camps:
-                c_name = str(c.get("name", "")).replace(" ", "")
-                c_type = str(c.get("campaignTp", c.get("type", ""))).upper()
-                # 타입이 WEB_SITE 이거나 이름에 파워링크 포함. 단, 플레이스는 절대 제외!
-                if (c_type == "WEB_SITE" or "파워" in c_name) and "플레" not in c_name and c_type != "LOCAL_AD":
-                    power_camps.append(c)
-            
-            master_power_adgroups = []
-            def fetch_power_adgroup_parallel(p_camp):
-                cid = p_camp.get("nccCampaignId")
-                camp_name = p_camp.get("name")
-                camp_lock = str(p_camp.get("userLock", "")).strip().upper()
-                camp_status = str(p_camp.get("status", "")).strip().upper()
-                camp_on = not (camp_lock in ["PAUSED", "STOPPED"] or camp_status in ["PAUSED", "STOPPED"])
-                res_list = []
-                try:
-                    time.sleep(0.05) 
-                    req_ag = make_naver_request("GET", f"/ncc/adgroups?nccCampaignId={cid}")
-                    with urllib.request.urlopen(req_ag, timeout=5) as res_ag:
-                        adgroups = json.loads(res_ag.read().decode("utf-8"))
-                        for ag in adgroups:
-                            ag["_cid"] = cid
-                            ag["_camp_name"] = camp_name
-                            ag["_camp_on"] = camp_on
-                            res_list.append(ag)
-                except Exception:
-                    pass
-                return res_list
+            place_targets = ["플레이스", "플레", "매장", "지점", "가양", "마곡", "인천", "김포", "안산", "일산", "강남", "양천"]
+            for camp in all_camps:
+                ctype = str(camp.get("campaignTp", camp.get("type", "WEB_SITE"))).upper()
+                cname = str(camp.get("name", ""))
+                if ctype in ["PLACE", "LOCAL_AD"] or any(k in cname for k in place_targets):
+                    continue
+                power_camps.append(camp)
 
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                for res in executor.map(fetch_power_adgroup_parallel, power_camps):
-                    master_power_adgroups.extend(res)
+            bot_records = []
+            daily_flow = {d: {"파워링크": 0, "플레이스": 0, "일일소비금액": 0} for d in date_list}
 
-            p_results = {}
-            p_cids_for_7d = []
-            p_loc_cids_map = {}
-            
-            for loc in power_locations:
-                active_bids, paused_bids, cids_to_check = [], [], []
-                is_any_on = False
-                for ag in master_power_adgroups:
-                    if loc in str(ag["_camp_name"]).replace(" ", "") or loc in str(ag.get("name", "")).replace(" ", ""):
-                        cid = ag["_cid"]
-                        if cid not in cids_to_check: cids_to_check.append(cid)
-                        if cid not in p_cids_for_7d: p_cids_for_7d.append(cid)
-                        
-                        ag_on = str(ag.get("userLock", "")).strip().upper() not in ["PAUSED", "STOPPED"] and str(ag.get("status", "")).strip().upper() not in ["PAUSED", "STOPPED"]
-                        ag_bid = int(ag.get("bidAmt", 0))
-                        
-                        if ag["_camp_on"] and ag_on:
-                            active_bids.append(ag_bid)
-                            is_any_on = True
-                        else:
-                            paused_bids.append(ag_bid)
-                
-                final_on = is_any_on
-                bid = max(active_bids) if active_bids else (max(paused_bids) if paused_bids else 0)
-                p_loc_cids_map[loc] = {"bid": bid, "is_on": final_on, "cids": cids_to_check}
-                
-            if 'power_api_stat_cache' not in st.session_state:
-                st.session_state.power_api_stat_cache = {}
-            
-            p_local_cache = st.session_state.power_api_stat_cache 
-            today_str = datetime.date.today().strftime('%Y-%m-%d')
-            p_date_list = [(datetime.date.today() - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
-            
-            p_stat_queries = set()
-            for loc, ldata in p_loc_cids_map.items():
-                for cid in ldata["cids"]: p_stat_queries.add((cid, p_stat_target_date))
-            for cid in p_cids_for_7d:
-                for d in p_date_list: p_stat_queries.add((cid, d))
+            # 캐시(임시 기억 장치) 메모리 할당
+            if 'power_period_cache' not in st.session_state:
+                st.session_state.power_period_cache = {}
+            local_cache = st.session_state.power_period_cache
 
-            def fetch_power_stat_with_cache(cid, date, cache_dict):
-                if date != today_str and (cid, date) in cache_dict:
-                    return cid, date, cache_dict[(cid, date)]
-                try:
+            # 비서(스레드)들이 수행할 개별 임무 정의
+            def process_campaign(camp, cache):
+                cid = camp.get("nccCampaignId")
+                cname = camp.get("name")
+                short_name = re.sub(r'\s*\(.*?\)', '', cname).replace("파워링크#", "").replace("플레이스#", "").strip()
+
+                def _get_stat(s_str, e_str):
+                    cache_key = (cid, s_str, e_str)
+                    if e_str != today_str and cache_key in cache:
+                        return cache[cache_key]
                     time.sleep(0.05)
-                    stat = fetch_campaign_stat_api(cid, date)
-                    return cid, date, stat
-                except Exception:
-                    return cid, date, {'spend':0, 'clicks':0, 'avg_rank':0}
+                    sp, clk, ctr, cpc = fetch_period_stat_api(cid, s_str, e_str)
+                    return (sp, clk, ctr, cpc)
 
-            p_stat_results_dict = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(fetch_power_stat_with_cache, q[0], q[1], p_local_cache) for q in p_stat_queries]
-                for future in concurrent.futures.as_completed(futures):
-                    c, d, stat = future.result()
-                    p_stat_results_dict[(c, d)] = stat
-                    if d != today_str:
-                        p_local_cache[(c, d)] = stat
-            
-            st.session_state.power_api_stat_cache = p_local_cache
-            
-            for loc, ldata in p_loc_cids_map.items():
-                tot_spend, tot_clicks, sum_rank, active_rank_cnt = 0, 0, 0.0, 0
-                for cid in ldata["cids"]:
-                    stat = p_stat_results_dict.get((cid, p_stat_target_date), {'spend':0, 'clicks':0, 'avg_rank':0})
-                    tot_spend += stat['spend']
-                    tot_clicks += stat['clicks']
-                    if stat['avg_rank'] > 0:
-                        sum_rank += stat['avg_rank']
-                        active_rank_cnt += 1
-                
-                p_results[loc] = {
-                    "bid": ldata["bid"], "is_on": ldata["is_on"],
-                    "avg_rank": sum_rank / active_rank_cnt if active_rank_cnt > 0 else 0.0,
-                    "spend": tot_spend, "clicks": tot_clicks, "date_label": p_display_date_label
+                pre_res = _get_stat(pre_start_str, pre_end_str)
+                post_res = _get_stat(post_start_str, post_end_str)
+
+                day_res = {}
+                for d in date_list:
+                    day_res[d] = _get_stat(d, d)
+
+                return {
+                    "cid": cid, "short_name": short_name,
+                    "pre": pre_res, "post": post_res, "days": day_res
                 }
-                
-            st.session_state.powerlink_diagnosis_data = p_results
+
+            total_camps = len(power_camps)
+            if total_camps > 0:
+                # ✨ 5명의 비서 투입 (초고속 병렬 처리)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = [executor.submit(process_campaign, camp, local_cache) for camp in power_camps]
+                    completed = 0
+                    for future in concurrent.futures.as_completed(futures):
+                        completed += 1
+                        progress_bar.progress(completed / total_camps)
+                        status_text.markdown(f"[{completed}/{total_camps}] 파워링크 데이터 초고속 대조 중... ⚡")
+                        res = future.result()
+
+                        # 가져온 데이터를 본부(캐시)에 저장
+                        cid = res["cid"]
+                        local_cache[(cid, pre_start_str, pre_end_str)] = res["pre"]
+                        local_cache[(cid, post_start_str, post_end_str)] = res["post"]
+                        for d in date_list:
+                            local_cache[(cid, d, d)] = res["days"][d]
+
+                        sp_pre, _, ctr_pre, cpc_pre = res["pre"]
+                        sp_post, clk_post, ctr_post, cpc_post = res["post"]
+
+                        # 지출이 1원이라도 있었던 파워링크 캠페인만 표에 추가
+                        if sp_pre > 0 or sp_post > 0:
+                            bot_records.append({
+                                "캠페인명": res["short_name"], "광고종류": "파워링크",
+                                "조정 전 비용": sp_pre, "클릭률_전": ctr_pre, "CPC_전": cpc_pre,
+                                "조정 후 비용": sp_post, "클릭률_후": ctr_post, "CPC_후": cpc_post,
+                                "클릭수_후": clk_post
+                            })
+                            for d in date_list:
+                                sp_day = res["days"][d][0]
+                                daily_flow[d]["파워링크"] += sp_day
+                                daily_flow[d]["일일소비금액"] += sp_day
+
+            # 결과물 최종 업데이트
+            st.session_state.power_period_cache = local_cache
+            st.session_state.merged_df = pd.DataFrame(bot_records)
+            st.session_state.daily_flow_data = daily_flow
             
-            power_7d_data = {d: 0 for d in p_date_list}
-            for d in p_date_list:
-                day_spend = 0
-                for cid in p_cids_for_7d:
-                    stat = p_stat_results_dict.get((cid, d), {'spend':0, 'clicks':0, 'avg_rank':0})
-                    day_spend += stat['spend']
-                power_7d_data[d] = day_spend
-                
-            st.session_state.powerlink_7d_flow = power_7d_data
-            
-            end_time = time.time()
-            st.success(f"⚡ 파워링크 초고속 동기화 완료! (단 {end_time - start_time:.1f}초 소요)")
-            time.sleep(1)
+            status_text.empty()
+            progress_bar.empty()
             st.rerun()
+    else:
+        st.error("달력 창에서 시작일과 마감일을 모두 선택해 주십시오.")
 
-if not st.session_state.get('powerlink_diagnosis_data'):
-    st.info("👆 위 동기화 버튼을 눌러 파워링크 전용 데이터를 연동해 주십시오.")
-else:
-    cols = st.columns(4)
-    for idx, loc in enumerate(power_locations):
-        data = st.session_state.powerlink_diagnosis_data.get(loc, {})
-        if not data: continue
-            
-        with cols[idx % 4]:
-            st.markdown(f"<div style='background-color:#F8FAFC; padding:8px; border-radius:6px; border-left:4px solid #047857; margin-bottom:10px;'><b style='font-size:15px; color:#0F172A;'>📍 [지점] {loc}</b></div>", unsafe_allow_html=True)
-            
-            display_rank = f"평균 {data['avg_rank']:.1f}위" if data['avg_rank'] > 0 else "집계중/순위밖"
-            
-            bg, border, text = "#F8FAFC", "#CBD5E1", "#475569" 
-            if data['avg_rank'] > 0 and data['avg_rank'] <= 3.0: bg, border, text = "#ECFDF5", "#10B981", "#047857"
-            elif data['avg_rank'] > 3.0 and data['avg_rank'] <= 7.0: bg, border, text = "#EFF6FF", "#3B82F6", "#1D4ED8"
-            elif data['avg_rank'] > 7.0: bg, border, text = "#FEF2F2", "#EF4444", "#B91C1C"
+if 'date_period_info' in st.session_state:
+    st.info(st.session_state.date_period_info)
 
-            st.markdown(f"""
-            <div style="background-color:{bg}; border:2px solid {border}; border-radius:8px; padding:12px; text-align:center; margin-bottom:10px;">
-                <div style="font-size:11px; color:{text}; margin-bottom:2px;">네이버 공식 API ({data.get('date_label', '어제')} 평균)</div>
-                <div style="font-size:18px; font-weight:bold; color:{text};">{display_rank}</div>
-            </div>
-            <div style='font-size:12px; color:#334155; line-height:1.6; background:#F1F5F9; padding:8px; border-radius:4px;'>
-                - 최대단가: <b>{data.get('bid', 0):,}원</b> ({'ON' if data.get('is_on') else 'OFF'})<br>
-                - 비용: <b>{data.get('spend', 0):,}원</b><br>
-                - 클릭: <b>{data.get('clicks', 0)}건</b>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("---")
+if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("<h3 style='font-size:18px; color:#1E3A8A; font-weight:bold;'>📈 파워링크 통합 리포트</h3>", unsafe_allow_html=True)
+    
     col_chart, col_table = st.columns([1, 1])
+    
     with col_chart:
-        if 'powerlink_7d_flow' in st.session_state and st.session_state.powerlink_7d_flow:
-            flow_df = pd.DataFrame([{"일자": d, "소진액": v} for d, v in st.session_state.powerlink_7d_flow.items()]).sort_values("일자")
-            st.markdown("<div style='font-size:14px; font-weight:bold; color:#047857; margin-bottom:10px;'>지점별 파워링크 일자별 총 소진액 흐름</div>", unsafe_allow_html=True)
-            power_chart = alt.Chart(flow_df).mark_bar(color="#047857").encode(x=alt.X("일자:N", axis=alt.Axis(labelAngle=0)), y=alt.Y("소진액:Q"), tooltip=["일자:N", alt.Tooltip("소진액:Q", format=",")]).properties(height=250)
-            st.altair_chart(power_chart, use_container_width=True)
-            
+        flow_records = [{"일자": d, "소진액": v["파워링크"]} for d, v in st.session_state.daily_flow_data.items()]
+        flow_df = pd.DataFrame(flow_records).sort_values("일자")
+        st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E40AF; margin-bottom:10px;'>파워링크 일자별 총 소진액 흐름</div>", unsafe_allow_html=True)
+        # 차트 X축 글씨 수평으로 고정 (labelAngle=0)
+        power_chart = alt.Chart(flow_df).mark_bar(color="#1E40AF").encode(x=alt.X("일자:N", axis=alt.Axis(labelAngle=0)), y=alt.Y("소진액:Q"), tooltip=["일자:N", alt.Tooltip("소진액:Q", format=",")]).properties(height=250)
+        st.altair_chart(power_chart, use_container_width=True)
+        
     with col_table:
-        st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E3A8A; margin-bottom:10px;'>파워링크 요약 테이블</div>", unsafe_allow_html=True)
-        summary_records = [{"지점명": loc, "최대단가": f"{data.get('bid', 0):,}원", "소진비용": f"{data.get('spend', 0):,}원", "클릭수": f"{data.get('clicks', 0)}건"} for loc, data in st.session_state.powerlink_diagnosis_data.items()]
-        if summary_records: st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
+        st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E3A8A; margin-bottom:10px;'>현재 시점 파워링크 요약 (선택기간 기준)</div>", unsafe_allow_html=True)
+        if 'merged_df' in st.session_state and st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
+            type_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
+            summary_records = []
+            for _, r in type_data.iterrows():
+                summary_records.append({
+                    "캠페인명": r['캠페인명'],
+                    "현재비용": f"{int(r['조정 후 비용']):,}원",
+                    "클릭수": f"{int(r.get('클릭수_후', 0))}건",
+                    "현재CPC": f"{int(r['CPC_후']):,}원"
+                })
+            if summary_records:
+                st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
 
+if 'merged_df' in st.session_state and st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
+    type_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
+    if not type_data.empty:
+        st.markdown("<br><div style='font-size:19px; font-weight:bold; color:#0F172A; margin-bottom:15px; border-left:5px solid #EA580C; padding-left:10px;'>파워링크 전후 성과 상세 대조표</div>", unsafe_allow_html=True)
+        
+        html_table = "<div style='background-color:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; overflow:hidden;'><table style='width:100%; text-align:center; border-collapse:collapse;'><thead style='background-color:#F8FAFC; border-bottom:2px solid #CBD5E1;'><tr><th style='padding:12px; font-size:13px;'>캠페인명</th><th style='padding:12px; font-size:13px;'>이전 비용</th><th style='padding:12px; font-size:13px;'>이후 비용</th><th style='padding:12px; font-size:13px;'>이전 CTR</th><th style='padding:12px; font-size:13px;'>이후 CTR</th><th style='padding:12px; font-size:13px;'>이전 CPC</th><th style='padding:12px; font-size:13px;'>이후 CPC</th><th style='padding:12px; font-size:13px;'>최종 조치</th><th style='padding:12px; font-size:13px;'>진단 사유</th></tr></thead><tbody>"
+        
+        for _, r in type_data.iterrows():
+            ctr_diff = r["클릭률_후"] - r["클릭률_전"]
+            cpc_diff = r["CPC_후"] - r["CPC_전"]
+            
+            txt_pre_spend = f"{int(r['조정 전 비용']):,}원"
+            txt_post_spend = f"{int(r['조정 후 비용']):,}원"
+            txt_pre_ctr = f"{r['클릭률_전']:.2f}%"
+            txt_post_ctr = f"{r['클릭률_후']:.2f}%"
+            txt_pre_cpc = f"{int(r['CPC_전']):,}원"
+            txt_post_cpc = f"{int(r['CPC_후']):,}원"
+            
+            if ctr_diff > 0 and cpc_diff <= 0: cond, c, reason = "유지 (우수)", "#16A34A", f"클릭률 상승({ctr_diff:+.2f}%) 및 단가 절감"
+            elif ctr_diff <= 0 and cpc_diff > 0: cond, c, reason = "수정 필요", "#DC2626", f"클릭률 하락({ctr_diff:.2f}%) 및 단가 인상"
+            elif ctr_diff > 0 and cpc_diff > 0: cond, c, reason = "모니터링", "#EA580C", f"유입은 증가했으나 비용 동반 상승"
+            elif ctr_diff < 0 and cpc_diff < 0: cond, c, reason = "단가 상향", "#2563EB", f"비용은 줄었으나 상권에서 밀려 유입 감소"
+            else: cond, c, reason = "안정화", "#475569", "전후 성과 변동폭 오차 내 균형"
+            
+            html_table += f"<tr style='border-bottom:1px solid #F1F5F9;'><td style='padding:10px; font-size:13px; font-weight:bold; text-align:left; padding-left:15px;'>{r['캠페인명']}</td><td>{txt_pre_spend}</td><td>{txt_post_spend}</td><td>{txt_pre_ctr}</td><td>{txt_post_ctr}</td><td>{txt_pre_cpc}</td><td>{txt_post_cpc}</td><td style='font-weight:bold; color:{c};'>{cond}</td><td style='text-align:left; font-size:12px;'>{reason}</td></tr>"
+        
+        html_table += "</tbody></table></div>"
+        st.markdown(html_table, unsafe_allow_html=True)
+        
 st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
-
 # ==========================================
 # 4. [4구역] AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
 # ==========================================
