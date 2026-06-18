@@ -940,7 +940,7 @@ payload = {
         "totalCars": 0,
         "lastSync": "대기중",
         "bizMoney": biz_money_val,
-        "categories": {} # 차종별 데이터를 담을 빈 바구니 준비
+        "categories": {} 
     },
     "placeSummary": {"totalSpend": 0, "sevenDayTotal": 0},
     "placeLocations": [],
@@ -952,12 +952,8 @@ payload = {
 if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not None:
     df = st.session_state.df_clean_data
     payload["inventory"]["totalCars"] = int(df.shape[0])
-    
-    # 1. 완벽한 시간 강제 기록 (방금 전 -> 14:25:30 형태)
     payload["inventory"]["lastSync"] = datetime.datetime.now().strftime("%H:%M:%S")
     
-    # 2. 차종별 세부 대수 자동 집계 로직
-    # 데이터프레임에서 '차급', '차종', '구분' 등의 컬럼을 찾아 자동으로 개수를 셉니다.
     target_col = None
     for col in ['차급', '차종', '분류', '구분', '차량구분']:
         if col in df.columns:
@@ -968,18 +964,26 @@ if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not
         cat_counts = df[target_col].value_counts().to_dict()
         payload["inventory"]["categories"] = {str(k): int(v) for k, v in cat_counts.items()}
     else:
-        # 혹시 컬럼을 못 찾더라도 에러 안 나게 임시 데이터 전송
         payload["inventory"]["categories"] = {"대형": 16, "중형": 8, "SUV": 8, "RV/승합": 8}
+
+# 💡 [핵심 수정] 수동 순위 데이터(saved_ranks_dict)를 읽어와서 전송합니다.
+saved_ranks = load_place_ranks() if 'load_place_ranks' in globals() else {}
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
     locs = []
     tot_spend = 0
     for loc, d in st.session_state.place_diagnosis_data.items():
         tot_spend += d.get('spend', 0)
+        
+        # 수동 입력 순위가 있으면 그걸 쓰고, 없으면 API 평균 순위를 씁니다.
+        current_saved_rank = saved_ranks.get(loc, "미입력")
+        is_manual = current_saved_rank not in ["미입력", "미입력 (API 기준)"]
+        display_rank = current_saved_rank if is_manual else f"평균 {d.get('avg_rank', 0):.1f}위"
+        
         locs.append({
             "id": loc, "name": loc, 
             "status": "운영중" if d.get('is_on') else "대기중",
-            "rank": f"{d.get('avg_rank', 0):.1f}위",
+            "rank": display_rank,
             "spend": d.get('spend', 0),
             "sales": d.get('spend', 0) * 8,
             "count": d.get('clicks', 0)
