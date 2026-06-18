@@ -927,13 +927,12 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
 
 # =========================================================================
-# [Next.js 대시보드로 데이터 강제 배달 엔진] - app.py 맨 아래 교체 (무결성 버전)
+# [Next.js 대시보드로 데이터 강제 배달 엔진] - app.py 맨 아래 교체
 # =========================================================================
 import requests
 import streamlit as st
 import datetime
 
-# 1. 비즈머니 데이터 정밀 트래킹
 biz_money_val = "0원"
 if 'naver_balance_val' in st.session_state:
     biz_money_val = f"{st.session_state.naver_balance_val:,}원"
@@ -943,16 +942,14 @@ else:
     biz_money_val = "471,896원"
 
 payload = {
-    "inventory": {
-        "totalCars": 0,
-        "lastSync": "대기중",
-        "bizMoney": biz_money_val,
-        "categories": {} 
-    },
+    "inventory": {"totalCars": 0, "lastSync": "대기중", "bizMoney": biz_money_val, "categories": {}},
     "placeSummary": {"totalSpend": 0, "sevenDayTotal": 0},
     "placeLocations": [],
+    "placeFlow": [], # 추가: 플레이스 7일 흐름
     "powerlinkSummary": {"totalSpend": 0, "sevenDayTotal": 0},
+    "powerlinkFlow": [], # 추가: 파워링크 7일 흐름
     "powerlinkRows": [],
+    "powerlinkCompare": [], # 추가: 파워링크 전후 대조표
     "aiReport": "Streamlit 메인 화면에서 통합 검증을 진행해주세요."
 }
 
@@ -960,20 +957,13 @@ if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not
     df = st.session_state.df_clean_data
     payload["inventory"]["totalCars"] = int(df.shape[0])
     payload["inventory"]["lastSync"] = datetime.datetime.now().strftime("%H:%M:%S")
-    
     target_col = None
     for col in ['차급', '차종', '분류', '구분', '차량구분']:
         if col in df.columns:
-            target_col = col
-            break
-            
+            target_col = col; break
     if target_col:
-        cat_counts = df[target_col].value_counts().to_dict()
-        payload["inventory"]["categories"] = {str(k): int(v) for k, v in cat_counts.items()}
-    else:
-        payload["inventory"]["categories"] = {"대형": 51, "중형": 0, "SUV": 0, "RV/승합": 0}
+        payload["inventory"]["categories"] = {str(k): int(v) for k, v in df[target_col].value_counts().to_dict().items()}
 
-# 수동 순위 연동 안전장치
 saved_ranks = {}
 if 'load_place_ranks' in globals():
     try: saved_ranks = load_place_ranks()
@@ -984,45 +974,79 @@ if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnos
     tot_spend = 0
     for loc, d in st.session_state.place_diagnosis_data.items():
         tot_spend += d.get('spend', 0)
-        
         current_saved_rank = saved_ranks.get(loc, "미입력")
         is_manual = current_saved_rank not in ["미입력", "미입력 (API 기준)"]
+        display_rank = current_saved_rank if is_manual else f"평균 {d.get('avg_rank', 0):.1f}위"
         
-        if is_manual:
-            display_rank = current_saved_rank
-        else:
-            display_rank = f"평균 {d.get('avg_rank', 0):.1f}위"
+        # 추가: 지점별 마스터 작전 지침 로직
+        current_rank_val = 99
+        if "1위" in display_rank: current_rank_val = 1
+        elif "2위" in display_rank: current_rank_val = 2
+        elif "3위" in display_rank: current_rank_val = 3
+        
+        # --- 수정된 마스터 작전 지침 로직 ---
+        advice = "[전략 대기] 데이터 분석 중입니다. 효율적인 예산 배분을 위해 모니터링을 유지하십시오."
+        
+        if loc in ["마곡", "가양", "양천향교"]:
+            if current_rank_val <= 1.5: 
+                advice = "[코어 장악 및 확장] 독점 중입니다. 영등포, 구로 권역까지 범위를 넓혀 수요를 흡수하십시오."
+            else: 
+                advice = "[우회 전술] 경쟁이 과열되었습니다. 반경 2km 내 화곡역, 등촌동 타겟팅으로 침투하십시오."
+                
+        elif loc == "김포공항": 
+            advice = "[타 지역 인터셉트] 검색 수요 전국구입니다. 인천 계양구, 일산 동구를 노출 지역에 강제 연동하십시오."
             
+        elif loc == "강남": 
+            advice = "[수요 급상승] 상위 입찰가를 유지하여 점유율 1위를 선점하십시오."
+            
+        elif loc == "안산": 
+            advice = "[운영 효율화] 현재 안정적입니다. 예산 과다 지출을 방지하고 클릭 단가 최적화에 집중하십시오."
+            
+        elif loc == "인천":
+            advice = "[권역 확장] 노출 지역을 부평구, 서구로 확대하여 유입 경로를 다각화하십시오."
+            
+        elif loc == "일산":
+            advice = "[타겟 정밀화] 고양시 전역으로 노출을 확대하고, 단기 렌트 수요 중심의 문구로 교체하십시오."
+        
         locs.append({
-            "id": loc, 
-            "name": loc, 
-            "status": "운영중" if d.get('is_on') else "대기중",
-            "rank": display_rank,
-            "spend": d.get('spend', 0),
-            "sales": d.get('spend', 0) * 8,
-            "count": d.get('clicks', 0)
+            "id": loc, "name": loc, "status": "운영중" if d.get('is_on') else "대기중",
+            "rank": display_rank, "spend": d.get('spend', 0), "sales": d.get('spend', 0) * 8,
+            "count": d.get('clicks', 0), "advice": advice
         })
     payload["placeLocations"] = locs
     payload["placeSummary"]["totalSpend"] = tot_spend
     if 'place_7d_flow' in st.session_state:
         payload["placeSummary"]["sevenDayTotal"] = sum(st.session_state.place_7d_flow.values())
+        payload["placeFlow"] = [{"date": d, "spend": v} for d, v in sorted(st.session_state.place_7d_flow.items())]
 
 if 'merged_df' in st.session_state and st.session_state.merged_df is not None:
     p_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
-    p_rows = []
+    p_rows, p_compare = [], []
     for idx, r in p_data.iterrows():
-        p_rows.append({
-            "id": str(idx), "keyword": r.get('캠페인명', '알수없음'), 
-            "status": "운영중", "rank": 0, 
-            "bid": r.get('CPC_후', 0), "spend": r.get('조정 후 비용', 0), 
-            "clicks": r.get('클릭수_후', 0), "action": "keep"
-        })
+        kw = r.get('캠페인명', '알수없음')
+        spend_pre, spend_post = r.get('조정 전 비용', 0), r.get('조정 후 비용', 0)
+        ctr_pre, ctr_post = r.get('클릭률_전', 0), r.get('클릭률_후', 0)
+        cpc_pre, cpc_post = r.get('CPC_전', 0), r.get('CPC_후', 0)
+        
+        p_rows.append({"id": str(idx), "keyword": kw, "status": "운영중", "rank": 0, "bid": cpc_post, "spend": spend_post, "clicks": r.get('클릭수_후', 0), "action": "keep"})
+        
+        ctr_diff, cpc_diff = ctr_post - ctr_pre, cpc_post - cpc_pre
+        if ctr_diff > 0 and cpc_diff <= 0: cond, c, reason = "유지 (우수)", "text-emerald-600", "클릭률 상승 및 단가 절감"
+        elif ctr_diff <= 0 and cpc_diff > 0: cond, c, reason = "수정 필요", "text-red-600", "클릭률 하락 및 단가 인상"
+        elif ctr_diff > 0 and cpc_diff > 0: cond, c, reason = "모니터링", "text-amber-600", "유입 증가, 비용 상승"
+        else: cond, c, reason = "단가 상향", "text-blue-600", "비용 감소, 유입 감소"
+        
+        p_compare.append({"keyword": kw, "preSpend": spend_pre, "postSpend": spend_post, "preCtr": ctr_pre, "postCtr": ctr_post, "preCpc": cpc_pre, "postCpc": cpc_post, "cond": cond, "color": c, "reason": reason})
+        
     payload["powerlinkRows"] = p_rows
+    payload["powerlinkCompare"] = p_compare
+
+if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
+    payload["powerlinkFlow"] = [{"date": d, "spend": v.get("파워링크", 0)} for d, v in sorted(st.session_state.daily_flow_data.items())]
 
 if 'monitoring_report' in st.session_state and st.session_state.monitoring_report:
     payload["aiReport"] = st.session_state.monitoring_report
 
-# 💡 [핵심] 그 어떤 조건문에도 묶이지 않고 무조건 실행되도록 가장 바깥 벽에 배치합니다.
 try:
     requests.post("http://localhost:3000/api/data", json=payload, timeout=2)
 except:
