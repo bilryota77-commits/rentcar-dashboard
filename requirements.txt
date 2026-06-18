@@ -4,3 +4,4 @@ altair
 firebase-admin
 gspread
 openpyxl
+google-generativeai
