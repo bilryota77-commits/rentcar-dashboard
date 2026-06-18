@@ -927,12 +927,19 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
 
 # =========================================================================
-# 🚀 [Next.js 대시보드로 데이터 강제 배달 엔진] - app.py 맨 아래 교체
+# [Next.js 대시보드로 데이터 강제 배달 엔진] - app.py 맨 아래 교체
 # =========================================================================
 import requests
+import streamlit as st
 
 payload = {
-    "inventory": {"totalCars": 0, "todayRevenue": 0, "lastSync": "동기화 대기중"},
+    "inventory": {
+        "totalCars": 0,
+        "lastSync": "동기화 대기중",
+        "c1": {"label": "C1 금융사 장기", "value": "데이터 수집중", "desc": "신용조회 및 외부 캐피탈 재고"},
+        "c3": {"label": "C3 무심사 장기", "value": "데이터 수집중", "desc": "내부 및 외부망 공유 재고 (영업팀 메인)"},
+        "c4": {"label": "C4 월/단기 렌트", "value": "데이터 수집중", "desc": "자사 상시 보유 재고 (마케팅팀 메인)"}
+    },
     "placeSummary": {"totalSpend": 0, "sevenDayTotal": 0},
     "placeLocations": [],
     "powerlinkSummary": {"totalSpend": 0, "sevenDayTotal": 0},
@@ -941,8 +948,14 @@ payload = {
 }
 
 if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not None:
-    payload["inventory"]["totalCars"] = int(st.session_state.df_clean_data.shape[0])
+    total = int(st.session_state.df_clean_data.shape[0])
+    payload["inventory"]["totalCars"] = total
     payload["inventory"]["lastSync"] = st.session_state.get('api_sync_timestamp', '방금 전')
+    
+    # 임시 재고 분배 로직 (추후 실제 데이터 컬럼 기준에 맞춰 수정 가능)
+    payload["inventory"]["c1"]["value"] = f"{int(total * 0.4)}대"
+    payload["inventory"]["c3"]["value"] = f"{int(total * 0.5)}대"
+    payload["inventory"]["c4"]["value"] = f"{int(total * 0.1)}대"
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
     locs = []
@@ -951,7 +964,7 @@ if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnos
         tot_spend += d.get('spend', 0)
         locs.append({
             "id": loc, "name": loc, 
-            "status": "ON" if d.get('is_on') else "OFF",
+            "status": "운영중" if d.get('is_on') else "대기중",
             "rank": f"{d.get('avg_rank', 0):.1f}위",
             "spend": d.get('spend', 0),
             "sales": d.get('spend', 0) * 8,
@@ -967,9 +980,9 @@ if 'merged_df' in st.session_state and st.session_state.merged_df is not None:
     p_rows = []
     for idx, r in p_data.iterrows():
         p_rows.append({
-            "id": str(idx), "keyword": r['캠페인명'], 
+            "id": str(idx), "keyword": r.get('캠페인명', '알수없음'), 
             "status": "운영중", "rank": 0, 
-            "bid": r['CPC_후'], "spend": r['조정 후 비용'], 
+            "bid": r.get('CPC_후', 0), "spend": r.get('조정 후 비용', 0), 
             "clicks": r.get('클릭수_후', 0), "action": "keep"
         })
     payload["powerlinkRows"] = p_rows
@@ -977,7 +990,6 @@ if 'merged_df' in st.session_state and st.session_state.merged_df is not None:
 if 'monitoring_report' in st.session_state and st.session_state.monitoring_report:
     payload["aiReport"] = st.session_state.monitoring_report
 
-# 대표님 로컬 컴퓨터 대시보드로 데이터를 직접 발송합니다.
 try:
     requests.post("http://localhost:3000/api/data", json=payload, timeout=2)
 except:
