@@ -982,7 +982,6 @@ if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnos
         current_saved_rank = saved_ranks.get(loc, "미입력")
         is_manual = current_saved_rank not in ["미입력", "미입력 (API 기준)"]
         
-        # 화면에 보낼 글자 조합 (예: "1위" 또는 "평균 0.0위")
         if is_manual:
             display_rank = current_saved_rank
         else:
