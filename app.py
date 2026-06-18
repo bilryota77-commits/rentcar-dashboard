@@ -932,13 +932,14 @@ st.markdown('</div>', unsafe_allow_html=True)
 import requests
 import streamlit as st
 
+# 비즈머니 잔액을 세션에서 가져옵니다 (세션에 없으면 기본 텍스트 출력)
+biz_money_val = st.session_state.get('biz_money', "471,896원") 
+
 payload = {
     "inventory": {
         "totalCars": 0,
         "lastSync": "동기화 대기중",
-        "c1": {"label": "C1 금융사 장기", "value": "데이터 수집중", "desc": "신용조회 및 외부 캐피탈 재고"},
-        "c3": {"label": "C3 무심사 장기", "value": "데이터 수집중", "desc": "내부 및 외부망 공유 재고 (영업팀 메인)"},
-        "c4": {"label": "C4 월/단기 렌트", "value": "데이터 수집중", "desc": "자사 상시 보유 재고 (마케팅팀 메인)"}
+        "bizMoney": biz_money_val
     },
     "placeSummary": {"totalSpend": 0, "sevenDayTotal": 0},
     "placeLocations": [],
@@ -951,11 +952,7 @@ if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not
     total = int(st.session_state.df_clean_data.shape[0])
     payload["inventory"]["totalCars"] = total
     payload["inventory"]["lastSync"] = st.session_state.get('api_sync_timestamp', '방금 전')
-    
-    # 임시 재고 분배 로직 (추후 실제 데이터 컬럼 기준에 맞춰 수정 가능)
-    payload["inventory"]["c1"]["value"] = f"{int(total * 0.4)}대"
-    payload["inventory"]["c3"]["value"] = f"{int(total * 0.5)}대"
-    payload["inventory"]["c4"]["value"] = f"{int(total * 0.1)}대"
+    # 논리적으로 맞지 않는 C1, C3, C4 분배 로직은 완전히 삭제했습니다.
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
     locs = []
