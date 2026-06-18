@@ -966,8 +966,11 @@ if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not
     else:
         payload["inventory"]["categories"] = {"대형": 16, "중형": 8, "SUV": 8, "RV/승합": 8}
 
-# 💡 [핵심 수정] 수동 순위 데이터(saved_ranks_dict)를 읽어와서 전송합니다.
-saved_ranks = load_place_ranks() if 'load_place_ranks' in globals() else {}
+# 수동 순위 가져오기 (파이어베이스 또는 세션)
+try:
+    saved_ranks = load_place_ranks()
+except:
+    saved_ranks = {}
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
     locs = []
@@ -975,11 +978,16 @@ if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnos
     for loc, d in st.session_state.place_diagnosis_data.items():
         tot_spend += d.get('spend', 0)
         
-        # 수동 입력 순위가 있으면 그걸 쓰고, 없으면 API 평균 순위를 씁니다.
+        # 수동 순위와 API 순위 조합
         current_saved_rank = saved_ranks.get(loc, "미입력")
         is_manual = current_saved_rank not in ["미입력", "미입력 (API 기준)"]
-        display_rank = current_saved_rank if is_manual else f"평균 {d.get('avg_rank', 0):.1f}위"
         
+        # 화면에 보낼 글자 조합 (예: "1위" 또는 "평균 0.0위")
+        if is_manual:
+            display_rank = current_saved_rank
+        else:
+            display_rank = f"평균 {d.get('avg_rank', 0):.1f}위"
+            
         locs.append({
             "id": loc, "name": loc, 
             "status": "운영중" if d.get('is_on') else "대기중",
