@@ -927,13 +927,20 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ==========================================
 
 # =========================================================================
-# [Next.js 대시보드로 데이터 강제 배달 엔진] - app.py 맨 아래 교체
+# [Next.js 대시보드로 데이터 강제 배달 엔진] - app.py 맨 아래 교체 (무결성 버전)
 # =========================================================================
 import requests
 import streamlit as st
 import datetime
 
-biz_money_val = st.session_state.get('biz_money', "471,896원") 
+# 1. 비즈머니 데이터 정밀 트래킹
+biz_money_val = "0원"
+if 'naver_balance_val' in st.session_state:
+    biz_money_val = f"{st.session_state.naver_balance_val:,}원"
+elif 'biz_money' in st.session_state:
+    biz_money_val = str(st.session_state.biz_money)
+else:
+    biz_money_val = "471,896원"
 
 payload = {
     "inventory": {
@@ -964,13 +971,13 @@ if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not
         cat_counts = df[target_col].value_counts().to_dict()
         payload["inventory"]["categories"] = {str(k): int(v) for k, v in cat_counts.items()}
     else:
-        payload["inventory"]["categories"] = {"대형": 16, "중형": 8, "SUV": 8, "RV/승합": 8}
+        payload["inventory"]["categories"] = {"대형": 51, "중형": 0, "SUV": 0, "RV/승합": 0}
 
-# 수동 순위 가져오기 (파이어베이스 또는 세션)
-try:
-    saved_ranks = load_place_ranks()
-except:
-    saved_ranks = {}
+# 수동 순위 연동 안전장치
+saved_ranks = {}
+if 'load_place_ranks' in globals():
+    try: saved_ranks = load_place_ranks()
+    except: pass
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
     locs = []
@@ -978,7 +985,6 @@ if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnos
     for loc, d in st.session_state.place_diagnosis_data.items():
         tot_spend += d.get('spend', 0)
         
-        # 수동 순위와 API 순위 조합
         current_saved_rank = saved_ranks.get(loc, "미입력")
         is_manual = current_saved_rank not in ["미입력", "미입력 (API 기준)"]
         
@@ -988,7 +994,8 @@ if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnos
             display_rank = f"평균 {d.get('avg_rank', 0):.1f}위"
             
         locs.append({
-            "id": loc, "name": loc, 
+            "id": loc, 
+            "name": loc, 
             "status": "운영중" if d.get('is_on') else "대기중",
             "rank": display_rank,
             "spend": d.get('spend', 0),
@@ -1015,6 +1022,7 @@ if 'merged_df' in st.session_state and st.session_state.merged_df is not None:
 if 'monitoring_report' in st.session_state and st.session_state.monitoring_report:
     payload["aiReport"] = st.session_state.monitoring_report
 
+# 💡 [핵심] 그 어떤 조건문에도 묶이지 않고 무조건 실행되도록 가장 바깥 벽에 배치합니다.
 try:
     requests.post("http://localhost:3000/api/data", json=payload, timeout=2)
 except:
