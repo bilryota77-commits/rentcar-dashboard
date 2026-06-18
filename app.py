@@ -951,7 +951,9 @@ payload = {
 if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not None:
     total = int(st.session_state.df_clean_data.shape[0])
     payload["inventory"]["totalCars"] = total
-    payload["inventory"]["lastSync"] = st.session_state.get('api_sync_timestamp', '방금 전')
+    import datetime
+# 데이터를 보내는 한국 현재 시간을 시:분:초 형태로 예쁘게 찍어줍니다.
+payload["inventory"]["lastSync"] = datetime.datetime.now().strftime("%H:%M:%S")
     # 논리적으로 맞지 않는 C1, C3, C4 분배 로직은 완전히 삭제했습니다.
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
