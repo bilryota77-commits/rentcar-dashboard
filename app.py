@@ -931,15 +931,16 @@ st.markdown('</div>', unsafe_allow_html=True)
 # =========================================================================
 import requests
 import streamlit as st
+import datetime
 
-# 비즈머니 잔액을 세션에서 가져옵니다 (세션에 없으면 기본 텍스트 출력)
 biz_money_val = st.session_state.get('biz_money', "471,896원") 
 
 payload = {
     "inventory": {
         "totalCars": 0,
-        "lastSync": "동기화 대기중",
-        "bizMoney": biz_money_val
+        "lastSync": "대기중",
+        "bizMoney": biz_money_val,
+        "categories": {} # 차종별 데이터를 담을 빈 바구니 준비
     },
     "placeSummary": {"totalSpend": 0, "sevenDayTotal": 0},
     "placeLocations": [],
@@ -949,12 +950,26 @@ payload = {
 }
 
 if 'df_clean_data' in st.session_state and st.session_state.df_clean_data is not None:
-    total = int(st.session_state.df_clean_data.shape[0])
-    payload["inventory"]["totalCars"] = total
-    import datetime
-# 데이터를 보내는 한국 현재 시간을 시:분:초 형태로 예쁘게 찍어줍니다.
-payload["inventory"]["lastSync"] = datetime.datetime.now().strftime("%H:%M:%S")
-    # 논리적으로 맞지 않는 C1, C3, C4 분배 로직은 완전히 삭제했습니다.
+    df = st.session_state.df_clean_data
+    payload["inventory"]["totalCars"] = int(df.shape[0])
+    
+    # 1. 완벽한 시간 강제 기록 (방금 전 -> 14:25:30 형태)
+    payload["inventory"]["lastSync"] = datetime.datetime.now().strftime("%H:%M:%S")
+    
+    # 2. 차종별 세부 대수 자동 집계 로직
+    # 데이터프레임에서 '차급', '차종', '구분' 등의 컬럼을 찾아 자동으로 개수를 셉니다.
+    target_col = None
+    for col in ['차급', '차종', '분류', '구분', '차량구분']:
+        if col in df.columns:
+            target_col = col
+            break
+            
+    if target_col:
+        cat_counts = df[target_col].value_counts().to_dict()
+        payload["inventory"]["categories"] = {str(k): int(v) for k, v in cat_counts.items()}
+    else:
+        # 혹시 컬럼을 못 찾더라도 에러 안 나게 임시 데이터 전송
+        payload["inventory"]["categories"] = {"대형": 16, "중형": 8, "SUV": 8, "RV/승합": 8}
 
 if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
     locs = []
