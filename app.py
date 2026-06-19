@@ -117,7 +117,6 @@ def make_naver_request(method, uri):
     req.add_header("X-Customer", str(NAVER_CUSTOMER_ID))
     req.add_header("X-Signature", signature)
     return req
-
 def fetch_naver_bizmoney():
     try:
         req = make_naver_request("GET", "/billing/bizmoney")
@@ -129,7 +128,9 @@ def fetch_naver_bizmoney():
                     st.session_state.naver_balance_val = val
                     return val
         return st.session_state.get('naver_balance_val', 0)
-    except:
+    except Exception as e:
+        # 💡 네이버가 거절한 진짜 이유를 대시보드 최상단에 빨간색으로 띄웁니다!
+        st.error(f"🚨 네이버 비즈머니 통신 에러 발생: {e}")
         return st.session_state.get('naver_balance_val', 0)
 
 def get_all_naver_campaigns():
