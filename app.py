@@ -1,9 +1,3 @@
-import streamlit as st
-import pandas as pd
-import altair as alt
-import datetime
-import time
-import json
 import os
 import requests
 import hashlib
@@ -13,6 +7,34 @@ import urllib.request
 import urllib.parse
 import concurrent.futures
 import re
+import json
+import streamlit as st  # 💡 이 줄이 반드시 있어야 st.secrets를 쓸 수 있습니다!
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# --- 파이어베이스 초기화 (스트림릿 클라우드 전용) ---
+if not firebase_admin._apps:
+    try:
+        # 클라우드 비밀금고에서 마스터키 꺼내기
+        key_dict = json.loads(st.secrets["FIREBASE_JSON"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"파이어베이스 연결 실패: {e}")
+
+db = firestore.client()
+# ------------------------------------------------
+# ------------------------------------------------
+
+# --- 동기화용 설정 추가 ---
+def sync_to_firebase(full_data):
+    """Next.js 파일 대신 파이어베이스 DB로 데이터를 쏩니다."""
+    try:
+        doc_ref = db.collection("rentcar_data").document("main_dashboard")
+        doc_ref.set(full_data)
+        st.success("파이어베이스(클라우드 DB)에 데이터 전송 완료!")
+    except Exception as e:
+        st.error(f"파이어베이스 전송 실패: {e}")
 
 # [모바일 최적화 코드] 하단 여백 제거 및 전체 폭 최적화
 st.markdown("""
@@ -31,6 +53,24 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# (버튼 클릭 시 실행되는 부분)
+full_data_to_send = {
+    "inventory": naver_data.get('inventory', {}),
+    "placeSummary": naver_data.get('placeSummary', {}),
+    "placeLocations": naver_data.get('placeLocations', []),
+    "placeFlow": naver_data.get('placeFlow', []),
+    "powerlinkSummary": {
+        "totalSpend": naver_data.get('powerlink_today_spend', 0),
+        "totalClicks": naver_data.get('powerlink_today_clicks', 0)
+    },
+    "powerlinkRows": naver_data.get('powerlinkRows', []),
+    "powerlinkFlow": naver_data.get('powerlinkFlow', []),
+    "powerlinkCompare": naver_data.get('powerlinkCompare', []),
+    "aiReport": naver_data.get('aiReport', '지침 대기중')
+}
+
+sync_to_firebase(full_data_to_send)
 
 # =========================================================================
 # ⚡ [V28.4 마스터] 네이버 API 통계 정밀 추출 엔진 (글로벌 안전지대 배치)
@@ -894,6 +934,29 @@ if st.button("재고 및 광고 성과 통합 검증 시작", key="ai_report_btn
             [현장 요구사항] {user_remark}
             """
             st.session_state.monitoring_report = model.generate_content(sys_prompt).text
+# ... (기존 Gemini 분석 코드)
+            st.session_state.monitoring_report = model.generate_content(sys_prompt).text
+            
+            # 1. 여기서 데이터를 묶어서 Next.js로 보냅니다.
+            full_data_to_send = {
+                "inventory": st.session_state.get('inventory_data', {}),
+                "placeSummary": st.session_state.get('place_summary', {}),
+                "placeLocations": list(st.session_state.get('place_diagnosis_data', {}).values()),
+                "placeFlow": st.session_state.get('place_flow', []),
+                "powerlinkSummary": {
+                    "totalSpend": st.session_state.get('pw_today_spend', 200822),
+                    "totalClicks": st.session_state.get('pw_today_clicks', 0)
+                },
+                "powerlinkRows": st.session_state.get('pw_rows', []),
+                "powerlinkFlow": st.session_state.get('pw_flow', []),
+                "powerlinkCompare": st.session_state.get('pw_compare', []),
+                "aiReport": st.session_state.monitoring_report
+            }
+            sync_to_dashboard(full_data_to_send) 
+            
+            # 2. 그 다음에 성공 메시지가 뜹니다.
+            st.success("AI 기반 마케팅 조치안 작성이 완료되었습니다.")
+            st.rerun()
             st.success("AI 기반 마케팅 조치안 작성이 완료되었습니다.")
             st.rerun() # ✨ 모바일 렌더링 누락 방지를 위한 즉시 갱신 강제 조치
         
