@@ -8,7 +8,8 @@ import urllib.parse
 import concurrent.futures
 import re
 import json
-import streamlit as st  # 💡 이 줄이 반드시 있어야 st.secrets를 쓸 수 있습니다!
+import streamlit as st
+import pandas as pd  # 💡 이 줄이 빠져 있어서 에러가 났던 것입니다!
 import firebase_admin
 from firebase_admin import credentials, firestore
 
