@@ -8,8 +8,9 @@ import urllib.parse
 import concurrent.futures
 import re
 import json
+import time         # 💡 바로 이 줄을 추가해 주세요!!! (시계 부품)
 import streamlit as st
-import pandas as pd  # 💡 이 줄이 빠져 있어서 에러가 났던 것입니다!
+import pandas as pd 
 import firebase_admin
 from firebase_admin import credentials, firestore
 
