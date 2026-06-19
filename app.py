@@ -54,6 +54,18 @@ try:
 except:
     db = None
 
+# 🚀 [추가됨] 파이어베이스 배달 비서 🚀
+def sync_to_firebase(payload_data):
+    if not db:
+        st.error("❌ 파이어베이스가 연결되지 않아 데이터를 전송할 수 없습니다.")
+        return
+    try:
+        doc_ref = db.collection("rentcar_data").document("main_dashboard")
+        doc_ref.set(payload_data)
+        st.success("☁️ 파이어베이스(클라우드 DB) main_dashboard 문서 전송 완벽 성공!")
+    except Exception as e:
+        st.error(f"❌ 파이어베이스 전송 실패: {e}")
+
 def load_place_ranks():
     if db:
         try:
@@ -877,15 +889,8 @@ if st.button("재고 및 광고 성과 통합 검증 시작 (파이어베이스 
                 
                 payload["powerlinkCompare"].append({"keyword": kw, "preSpend": spend_pre, "postSpend": spend_post, "preCtr": ctr_pre, "postCtr": ctr_post, "preCpc": cpc_pre, "postCpc": cpc_post, "cond": cond, "color": c, "reason": reason})
 
-        # --- 옛날의 로컬 포스트를 걷어내고 파이어베이스 창고로 직송! ---
-        if db:
-            try:
-                db.collection("rentcar_data").document("main_dashboard").set(payload)
-                st.success("✅ AI 마케팅 분석 완료 및 파이어베이스 클라우드 전송에 완벽하게 성공했습니다!")
-            except Exception as e:
-                st.error(f"❌ 파이어베이스 전송 실패: {e}")
-        else:
-            st.error("파이어베이스가 연결되지 않아 전송할 수 없습니다.")
+        # --- 로컬호스트를 없애고 파이어베이스 창고로 바로 쏜다! ---
+        sync_to_firebase(payload)
             
         time.sleep(1)
         st.rerun()
