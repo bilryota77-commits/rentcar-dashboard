@@ -27,50 +27,33 @@ db = firestore.client()
 # ------------------------------------------------
 
 # --- 동기화용 설정 추가 ---
-def sync_to_firebase(full_data):
+def sync_to_firebase(naver_data):
     """Next.js 파일 대신 파이어베이스 DB로 데이터를 쏩니다."""
     try:
+        # 1. 전달받은 데이터를 파이어베이스에 쏘기 좋게 딕셔너리로 예쁘게 묶습니다.
+        full_data_to_send = {
+            "inventory": naver_data.get('inventory', {}),
+            "placeSummary": naver_data.get('placeSummary', {}),
+            "placeLocations": naver_data.get('placeLocations', []),
+            "placeFlow": naver_data.get('placeFlow', []),
+            "powerlinkSummary": {
+                "totalSpend": naver_data.get('powerlink_today_spend', 0),
+                "totalClicks": naver_data.get('powerlink_today_clicks', 0)
+            },
+            "powerlinkRows": naver_data.get('powerlinkRows', []),
+            "powerlinkFlow": naver_data.get('powerlinkFlow', []),
+            "powerlinkCompare": naver_data.get('powerlinkCompare', []),
+            "aiReport": naver_data.get('aiReport', '지침 대기중')
+        }
+
+        # 2. 파이어베이스 rentcar_data 컬렉션에 main_dashboard 문서로 전송합니다.
         doc_ref = db.collection("rentcar_data").document("main_dashboard")
-        doc_ref.set(full_data)
-        st.success("파이어베이스(클라우드 DB)에 데이터 전송 완료!")
+        doc_ref.set(full_data_to_send)
+        st.success("☁️ 파이어베이스(클라우드 DB)에 데이터 전송 완료!")
     except Exception as e:
-        st.error(f"파이어베이스 전송 실패: {e}")
+        st.error(f"❌ 파이어베이스 전송 실패: {e}")
 
-# [모바일 최적화 코드] 하단 여백 제거 및 전체 폭 최적화
-st.markdown("""
-<style>
-    /* 모바일에서 하단 불필요한 공백 제거 */
-    .block-container { padding-bottom: 0rem !important; }
-    
-    /* 4구역 AI 지침 박스 모바일 가독성 개선 */
-    .ai-box { 
-        background-color: #f8fafc; 
-        border: 1px solid #e2e8f0; 
-        border-radius: 8px; 
-        padding: 15px; 
-        font-size: 14px; 
-        line-height: 1.5;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# (버튼 클릭 시 실행되는 부분)
-full_data_to_send = {
-    "inventory": naver_data.get('inventory', {}),
-    "placeSummary": naver_data.get('placeSummary', {}),
-    "placeLocations": naver_data.get('placeLocations', []),
-    "placeFlow": naver_data.get('placeFlow', []),
-    "powerlinkSummary": {
-        "totalSpend": naver_data.get('powerlink_today_spend', 0),
-        "totalClicks": naver_data.get('powerlink_today_clicks', 0)
-    },
-    "powerlinkRows": naver_data.get('powerlinkRows', []),
-    "powerlinkFlow": naver_data.get('powerlinkFlow', []),
-    "powerlinkCompare": naver_data.get('powerlinkCompare', []),
-    "aiReport": naver_data.get('aiReport', '지침 대기중')
-}
-
-sync_to_firebase(full_data_to_send)
+    sync_to_firebase(data_result)
 
 # =========================================================================
 # ⚡ [V28.4 마스터] 네이버 API 통계 정밀 추출 엔진 (글로벌 안전지대 배치)
