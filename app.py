@@ -81,7 +81,8 @@ def fetch_campaign_stat_api(camp_id, target_date):
 # ==========================================
 NAVER_API_KEY = st.secrets["NAVER_API_KEY"]
 NAVER_SECRET_KEY = st.secrets["NAVER_SECRET_KEY"]
-NAVER_CUSTOMER_ID = st.secrets["NAVER_CUSTOMER_ID"]
+# 💡 아래처럼 str() 괄호로 감싸주세요!
+NAVER_CUSTOMER_ID = str(st.secrets["NAVER_CUSTOMER_ID"])
 GEMINI_API_KEY = "AIzaSyBD_LEBVFv-5nkWXa132iTzpPoXT7RTWf0"
 KAKAO_ACCESS_TOKEN = "카카오_토큰을_여기에_입력하세요"
 
