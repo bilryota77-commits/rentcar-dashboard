@@ -79,9 +79,9 @@ def fetch_campaign_stat_api(camp_id, target_date):
 # ==========================================
 # [필수 설정] API 연동 키 직접 입력 구역
 # ==========================================
-NAVER_API_KEY = "010000000010a5ec12ce70ec2016073db0f15a62d454f46a91d9a85935ac1f695138836949"
-NAVER_SECRET_KEY = "AQAAAABEFsYnFFNuxm5VhOGRDIGB415lQD/GENBpSpxNfn9cMw=="
-NAVER_CUSTOMER_ID = 2696400
+NAVER_API_KEY = st.secrets["NAVER_API_KEY"]
+NAVER_SECRET_KEY = st.secrets["NAVER_SECRET_KEY"]
+NAVER_CUSTOMER_ID = st.secrets["NAVER_CUSTOMER_ID"]
 GEMINI_API_KEY = "AIzaSyBD_LEBVFv-5nkWXa132iTzpPoXT7RTWf0"
 KAKAO_ACCESS_TOKEN = "카카오_토큰을_여기에_입력하세요"
 
