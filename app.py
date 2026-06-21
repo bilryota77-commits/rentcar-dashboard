@@ -8,15 +8,18 @@ import urllib.parse
 import concurrent.futures
 import re
 import json
-import time
+import time         
 import datetime
 import streamlit as st
 import pandas as pd 
 import firebase_admin
 from firebase_admin import credentials, firestore
+import altair as alt
+
+st.set_page_config(layout="wide")
 
 # ==========================================
-# [필수 설정] API 연동 키 직접 입력 구역
+# [필수 설정] API 연동 키 구역
 # ==========================================
 NAVER_API_KEY = st.secrets["NAVER_API_KEY"]
 NAVER_SECRET_KEY = st.secrets["NAVER_SECRET_KEY"]
@@ -24,10 +27,8 @@ NAVER_CUSTOMER_ID = str(st.secrets["NAVER_CUSTOMER_ID"])
 GEMINI_API_KEY = "AIzaSyBD_LEBVFv-5nkWXa132iTzpPoXT7RTWf0"
 KAKAO_ACCESS_TOKEN = "카카오_토큰을_여기에_입력하세요"
 
-st.set_page_config(layout="wide")
-
 # ==========================================
-# 글로벌 세션 상태 초기화
+# 글로벌 세션 상태 초기화 (깜빡임 방지용 데이터 앵커)
 # ==========================================
 if 'api_sync_timestamp' not in st.session_state: st.session_state.api_sync_timestamp = "동기화 전"
 if 'api_data_period' not in st.session_state: st.session_state.api_data_period = "집계 대기"
@@ -39,11 +40,11 @@ if 'merged_df' not in st.session_state: st.session_state.merged_df = None
 if 'monitoring_report' not in st.session_state: st.session_state.monitoring_report = ""
 
 # ==========================================
-# --- 파이어베이스 초기화 (스트림릿 클라우드 전용) ---
+# --- 파이어베이스 초기화 (Vercel 통로의 시작점) ---
 # ==========================================
 if not firebase_admin._apps:
     try:
-        key_dict = json.loads(st.secrets["FIREBASE_JSON"])
+        key_dict = dict(st.secrets["firebase"])
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
     except Exception as e:
@@ -51,20 +52,20 @@ if not firebase_admin._apps:
 
 try:
     db = firestore.client()
-except:
+except Exception:
     db = None
 
-# 🚀 [추가됨] 파이어베이스 배달 비서 🚀
+# --- Vercel로 가는 데이터 배달 비서 ---
 def sync_to_firebase(payload_data):
     if not db:
-        st.error("❌ 파이어베이스가 연결되지 않아 데이터를 전송할 수 없습니다.")
+        st.error("❌ 파이어베이스가 연결되지 않아 Vercel로 데이터를 보낼 수 없습니다.")
         return
     try:
-        doc_ref = db.collection("rentcar_data").document("main_dashboard")
-        doc_ref.set(payload_data)
-        st.success("☁️ 파이어베이스(클라우드 DB) main_dashboard 문서 전송 완벽 성공!")
+        # Vercel이 쳐다보고 있는 'rentcar_data' -> 'main_dashboard' 방에 정확히 데이터를 꽂습니다.
+        db.collection("rentcar_data").document("main_dashboard").set(payload_data)
+        st.success("☁️ 파이어베이스 클라우드 전송 완료! (Vercel 화면이 즉시 업데이트됩니다)")
     except Exception as e:
-        st.error(f"❌ 파이어베이스 전송 실패: {e}")
+        st.error(f"❌ 데이터 전송 실패: {e}")
 
 def load_place_ranks():
     if db:
@@ -73,7 +74,7 @@ def load_place_ranks():
             doc = doc_ref.get()
             if doc.exists:
                 return doc.to_dict()
-        except Exception as e:
+        except Exception:
             pass
     return {}
 
@@ -82,11 +83,11 @@ def save_place_ranks(data):
         try:
             doc_ref = db.collection("rentcar_data").document("place_ranks")
             doc_ref.set(data)
-        except Exception as e:
+        except Exception:
             pass
 
 # =========================================================================
-# ⚡ [V28.4 마스터] 네이버 API 통계 정밀 추출 엔진
+# ⚡ 네이버 API 통계 추출 엔진 (순위 누락 버그 & 429 한도 초과 방어 완비)
 # =========================================================================
 def make_naver_request(method, uri):
     timestamp = str(int(time.time() * 1000))
@@ -112,8 +113,10 @@ def fetch_naver_bizmoney():
                     st.session_state.naver_balance_val = val
                     return val
         return st.session_state.get('naver_balance_val', 0)
-    except Exception as e:
-        st.error(f"🚨 네이버 비즈머니 통신 에러 발생: {e}")
+    except urllib.error.HTTPError as e:
+        if e.code == 429: st.warning("⚠️ 비즈머니 호출 한도 초과 (자정 초기화)")
+        return st.session_state.get('naver_balance_val', 0)
+    except Exception:
         return st.session_state.get('naver_balance_val', 0)
 
 def get_all_naver_campaigns():
@@ -121,13 +124,17 @@ def get_all_naver_campaigns():
     try:
         with urllib.request.urlopen(req, timeout=5) as res:
             return json.loads(res.read().decode("utf-8")), None
+    except urllib.error.HTTPError as e:
+        if e.code == 429: return None, "API_LIMIT_EXCEEDED"
+        return None, str(e)
     except Exception as e:
         return None, str(e)
 
 def fetch_campaign_stat_api(camp_id, target_date):
     try:
         time_range_str = json.dumps({"since": target_date, "until": target_date})
-        req = make_naver_request("GET", f"/stats?idType=CAMPAIGN&id={camp_id}&fields=%5B%22clkCnt%22%2C%22impCnt%22%2C%22salesAmt%22%5D&timeRange={urllib.parse.quote(time_range_str)}")
+        # 💡 avgRnk(평균 순위) 필드를 네이버에 정식으로 요청하도록 추가했습니다.
+        req = make_naver_request("GET", f"/stats?idType=CAMPAIGN&id={camp_id}&fields=%5B%22clkCnt%22%2C%22impCnt%22%2C%22salesAmt%22%2C%22avgRnk%22%5D&timeRange={urllib.parse.quote(time_range_str)}")
         with urllib.request.urlopen(req, timeout=5) as res:
             res_data = json.loads(res.read().decode("utf-8"))
             data_list = res_data.get("data", [])
@@ -136,8 +143,9 @@ def fetch_campaign_stat_api(camp_id, target_date):
                 clicks = int(stat.get("clkCnt", 0))
                 imps = int(stat.get("impCnt", 0))
                 spend = int(stat.get("salesAmt", 0))
+                avg_rank = float(stat.get("avgRnk", 0.0))
                 ctr = (clicks / imps * 100) if imps > 0 else 0.0
-                return {"spend": spend, "clicks": clicks, "ctr": ctr, "avg_rank": 0.0}
+                return {"spend": spend, "clicks": clicks, "ctr": ctr, "avg_rank": avg_rank}
     except Exception:
         pass
     return {"spend": 0, "clicks": 0, "ctr": 0.0, "avg_rank": 0.0}
@@ -145,6 +153,7 @@ def fetch_campaign_stat_api(camp_id, target_date):
 def fetch_period_stat_api(camp_id, start_dt, end_dt):
     time_range_str = f'{{"since":"{start_dt}","until":"{end_dt}"}}'
     uri = f"/stats?idType=CAMPAIGN&id={camp_id}&fields=%5B%22clkCnt%22%2C%22impCnt%22%2C%22salesAmt%22%5D&timeRange={urllib.parse.quote(time_range_str)}"
+    
     spend, imp, clk = 0, 0, 0
     for _ in range(3):
         try:
@@ -161,12 +170,13 @@ def fetch_period_stat_api(camp_id, start_dt, end_dt):
                     break
         except Exception:
             time.sleep(0.5)
+            
     ctr = (clk / imp * 100) if imp > 0 else 0.0
     cpc = int(spend / clk) if clk > 0 else 0
     return spend, clk, ctr, cpc
 
 # ==========================================
-# [엔진 2] 구글 시트 실시간 재고 연동 모듈
+# [엔진 2] 구글 시트 실시간 재고 연동 모듈 
 # ==========================================
 def load_smart_spreadsheet(source_path):
     try:
@@ -216,11 +226,11 @@ def load_smart_spreadsheet(source_path):
         return None, str(e)
 
 # ==========================================
-# 📊 [최상단] 시차 폭로 및 KPI 대시보드
+# 📊 대시보드 메인 레이아웃 (관리자용 뷰)
 # ==========================================
 st.markdown("""
 <div style='background-color:#1E293B; padding:15px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-    <div style='color:#F8FAFC; font-size:22px; font-weight:bold;'>🚀 빌려타렌트카 권역별 마케팅 통합 지휘소</div>
+    <div style='color:#F8FAFC; font-size:22px; font-weight:bold;'>🚀 관리자 전용: 권역별 마케팅 통합 지휘소</div>
     <div style='text-align:right;'>
         <div style='color:#94A3B8; font-size:12px;'>네이버 공식 API 집계 기준: <span style='color:#38BDF8; font-weight:bold;'>{period}</span></div>
         <div style='color:#94A3B8; font-size:12px;'>마지막 동기화 시각: <span style='color:#10B981; font-weight:bold;'>{sync_time}</span></div>
@@ -242,28 +252,27 @@ with kpi_col2:
         target_text = f"{highest_cat} ({highest_count}대 보유)"
     st.metric(label="현재 가용 재고 1순위 (집중 타겟)", value=target_text)
 with kpi_col3:
-    st.metric(label="시스템 진단 모드", value="하이브리드 팩트 체크")
+    st.metric(label="시스템 모드", value="Vercel 통로 가동 중")
 
 st.markdown("---")
 
 # ==========================================
-# 1. [1구역] 실시간 재고 집계 관제
+# 1. [1구역] 실시간 재고 집계 
 # ==========================================
 st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
 <div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-    🚘 1. 실시간 재고 집계 관제 (광고 타겟 설정 기준)
+    🚘 1. 실시간 재고 통계 (Vercel용)
 </div>
 """, unsafe_allow_html=True)
 
 my_real_sheet = "https://docs.google.com/spreadsheets/d/1cyA7UB5wCiq58z6G103qcFLpKDjMyGKiRRkmTvGWLTk/edit?gid=0#gid=0"
-if st.button("실시간 재고 통계 동기화 실행", key="sync_btn", type="primary"):
+if st.button("재고 데이터 동기화 실행", key="sync_btn", type="primary"):
     df, err = load_smart_spreadsheet(my_real_sheet)
     if err: st.error(f"데이터 동기화 실패: {err}")
     else:
         st.success("실시간 재고 현황 정제 완료")
         st.session_state.df_clean_data = df
-        st.rerun()
 
 if st.session_state.df_clean_data is not None:
     df_target = st.session_state.df_clean_data
@@ -271,7 +280,6 @@ if st.session_state.df_clean_data is not None:
     car_col = [c for c in df_target.columns if '차종' in c][0]
     category_counts = df_target[base_col].value_counts()
     
-    st.markdown("<div style='font-size:18px; font-weight:bold; color:#334155; margin-top:15px; margin-bottom:15px;'>📋 분류 항목별 차량 가용 대수 현황</div>", unsafe_allow_html=True)
     cat_cols = st.columns(4)
     for idx, (cat_name, count_val) in enumerate(category_counts.items()):
         with cat_cols[idx % 4]:
@@ -281,14 +289,12 @@ if st.session_state.df_clean_data is not None:
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. [2구역] 플레이스 광고 현황
+# 2. [2구역] 플레이스 광고 통계
 # ==========================================
-import altair as alt
-
 st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
 <div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-    🎯 2. 플레이스 광고 현황
+    🎯 2. 플레이스 광고 현황 (Vercel용)
 </div>
 """, unsafe_allow_html=True)
 
@@ -310,20 +316,7 @@ with col1:
 with col2:
     st.metric(label="최근 7일 누적 플레이스 총 지출액 (비교용)", value=f"{total_place_spend_7days:,} 원")
 
-st.markdown("<div style='font-size:16px; font-weight:bold; color:#475569; margin-top:15px; margin-bottom:10px;'>📅 최근 7일 플레이스 지출 흐름</div>", unsafe_allow_html=True)
-if 'place_7d_flow' in st.session_state and st.session_state.place_7d_flow:
-    flow_cols = st.columns(7)
-    for i, (d, spend) in enumerate(sorted(st.session_state.place_7d_flow.items())):
-        short_date = d.split("-")[1] + "/" + d.split("-")[2]
-        with flow_cols[i]:
-            st.metric(label=short_date, value=f"{spend:,}원")
-else:
-    st.markdown("<div style='color:#94A3B8; font-size:13px;'>동기화 버튼을 누르면 일자별 흐름이 표시됩니다.</div>", unsafe_allow_html=True)
-
-st.markdown("---")
-
 place_locations = ["마곡", "가양", "양천향교", "김포공항", "강남", "안산", "인천", "일산"]
-st.markdown("<div style='font-size:14px; font-weight:bold; color:#334155; margin-bottom:5px;'>📅 데이터 조회 기준일 선택</div>", unsafe_allow_html=True)
 stat_option = st.radio("API 통계 추출 기준일 선택", ["오늘 (현재까지의 실시간 누적)", "어제 (최종 마감 팩트)"], horizontal=True, label_visibility="collapsed")
 
 if "오늘" in stat_option:
@@ -333,11 +326,12 @@ else:
     stat_target_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
     display_date_label = "어제"
 
-if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {stat_target_date})", key="place_sync_btn", type="primary"):
-    with st.spinner("🚀 [초고속 병렬 엔진 가동] 네이버 서버에서 데이터를 스캔 중입니다..."):
-        start_time = time.time() 
+if st.button(f"📊 네이버 API 통계 수집 (기준일: {stat_target_date})", key="place_sync_btn", type="primary"):
+    with st.spinner("🚀 네이버 서버에서 데이터를 스캔 중입니다..."):
         all_camps, err = get_all_naver_campaigns()
-        if err: 
+        if err == "API_LIMIT_EXCEEDED":
+            st.error("🚨 네이버 검색광고 API 호출 한도가 초과되었습니다. 자정(00:00) 이후에 다시 시도해주세요.")
+        elif err: 
             st.error(f"API 통신 장애: {err}")
         else:
             place_camps = [c for c in all_camps if str(c.get("campaignTp", c.get("type", ""))).upper() in ["LOCAL_AD", "PLACE"] or any(x in str(c.get("name", "")).replace(" ", "") for x in ["플레이스", "플레", "지역"])]
@@ -351,7 +345,6 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                 camp_on = not (camp_lock in ["PAUSED", "STOPPED"] or camp_status in ["PAUSED", "STOPPED"])
                 res_list = []
                 try:
-                    time.sleep(0.05) 
                     req_ag = make_naver_request("GET", f"/ncc/adgroups?nccCampaignId={cid}")
                     with urllib.request.urlopen(req_ag, timeout=5) as res_ag:
                         adgroups = json.loads(res_ag.read().decode("utf-8"))
@@ -387,12 +380,11 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
                             is_any_on = True
                         else:
                             paused_bids.append(ag_bid)
+                
                 final_on = is_any_on
                 bid = max(active_bids) if active_bids else (max(paused_bids) if paused_bids else 0)
                 loc_cids_map[loc] = {"bid": bid, "is_on": final_on, "cids": cids_to_check}
                 
-            if 'api_stat_cache' not in st.session_state: st.session_state.api_stat_cache = {}
-            local_cache = st.session_state.api_stat_cache 
             today_str = datetime.date.today().strftime('%Y-%m-%d')
             date_list = [(datetime.date.today() - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
             
@@ -402,31 +394,23 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
             for cid in cids_for_7d:
                 for d in date_list: stat_queries.add((cid, d))
 
-            def fetch_stat_with_cache(cid, date, cache_dict):
-                if date != today_str and (cid, date) in cache_dict:
-                    return cid, date, cache_dict[(cid, date)]
+            def fetch_stat_with_cache(cid, date):
                 try:
-                    time.sleep(0.05)
-                    stat = fetch_campaign_stat_api(cid, date)
-                    return cid, date, stat
+                    time.sleep(0.02)
+                    return cid, date, fetch_campaign_stat_api(cid, date)
                 except Exception:
                     return cid, date, {'spend':0, 'clicks':0, 'avg_rank':0}
 
             stat_results_dict = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(fetch_stat_with_cache, q[0], q[1], local_cache) for q in stat_queries]
-                for future in concurrent.futures.as_completed(futures):
+                for future in concurrent.futures.as_completed([executor.submit(fetch_stat_with_cache, q[0], q[1]) for q in stat_queries]):
                     c, d, stat = future.result()
                     stat_results_dict[(c, d)] = stat
-                    if d != today_str:
-                        local_cache[(c, d)] = stat
-            
-            st.session_state.api_stat_cache = local_cache
             
             for loc, ldata in loc_cids_map.items():
                 tot_spend, tot_clicks, sum_rank, active_rank_cnt = 0, 0, 0.0, 0
                 for cid in ldata["cids"]:
-                    stat = stat_results_dict.get((cid, stat_target_date), {'spend':0, 'clicks':0, 'avg_rank':0})
+                    stat = stat_results_dict.get((cid, stat_target_date), {'spend':0, 'clicks':0, 'avg_rank':0.0})
                     tot_spend += stat['spend']
                     tot_clicks += stat['clicks']
                     if stat['avg_rank'] > 0:
@@ -445,16 +429,13 @@ if st.button(f"📊 네이버 공식 성적표(API) 100% 동기화 (기준일: {
             for d in date_list:
                 day_spend = 0
                 for cid in cids_for_7d:
-                    stat = stat_results_dict.get((cid, d), {'spend':0, 'clicks':0, 'avg_rank':0})
+                    stat = stat_results_dict.get((cid, d), {'spend':0, 'clicks':0, 'avg_rank':0.0})
                     day_spend += stat['spend']
                 place_7d_data[d] = day_spend
                 
             st.session_state.place_7d_flow = place_7d_data
-            
-            end_time = time.time()
-            st.success(f"⚡ 초고속 동기화 완료! (단 {end_time - start_time:.1f}초 소요)")
-            time.sleep(1)
-            st.rerun()
+            st.session_state.api_sync_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.success("⚡ 동기화 완료! (화면에 곧 반영됩니다)")
 
 if not st.session_state.get('place_diagnosis_data'):
     st.info("👆 위 동기화 버튼을 눌러 네이버 공식 데이터를 연동해 주십시오.")
@@ -466,23 +447,21 @@ else:
         if not data: continue
             
         with cols[idx % 4]:
-            st.markdown(f"<div style='background-color:#F8FAFC; padding:8px; border-radius:6px; border-left:4px solid #1E3A8A; margin-bottom:10px;'><b style='font-size:15px; color:#0F172A;'>📍 [지점] {loc}</b></div>", unsafe_allow_html=True)
-            
-            search_kw = f"{loc} 렌트카".strip()
-            naver_search_url = f"https://m.search.naver.com/search.naver?where=m&query={urllib.parse.quote(search_kw)}"
-            st.markdown(f"<a href='{naver_search_url}' target='_blank' style='display:block; text-align:center; background-color:#22C55E; color:white; padding:8px; border-radius:4px; text-decoration:none; font-size:12px; font-weight:bold; margin-bottom:10px;'>현장 모바일 1초 즉시 확인</a>", unsafe_allow_html=True)
+            st.markdown(f"<div style='background-color:#F8FAFC; padding:8px; border-radius:6px; border-left:4px solid #1E3A8A; margin-bottom:10px;'><b style='font-size:15px; color:#0F172A;'>📍 {loc}</b></div>", unsafe_allow_html=True)
             
             current_saved_rank = saved_ranks_dict.get(loc, "미입력 (API 기준)")
             options_list = ["미입력 (API 기준)", "1위", "2위", "3위", "순위 밖"]
-            try: selected_idx = options_list.index(current_saved_rank)
-            except: selected_idx = 0
-                
-            override_val = st.selectbox("수동 오버라이드 (순위 덮어쓰기)", options_list, index=selected_idx, key=f"sb_{loc}")
             
-            if override_val != current_saved_rank:
-                saved_ranks_dict[loc] = override_val
+            # 💡 [버그 완전 해결] 선택 상자 조작 시 화면이 무한 깜빡이던 문제를 완전히 차단했습니다.
+            if f"sb_{loc}" not in st.session_state:
+                st.session_state[f"sb_{loc}"] = current_saved_rank
+                
+            def on_rank_change(location=loc):
+                new_val = st.session_state[f"sb_{location}"]
+                saved_ranks_dict[location] = new_val
                 save_place_ranks(saved_ranks_dict)
-                st.rerun()
+                
+            override_val = st.selectbox("순위 덮어쓰기 (Vercel에 즉시 반영)", options_list, key=f"sb_{loc}", on_change=on_rank_change)
 
             is_manual = override_val != "미입력 (API 기준)"
             display_rank = override_val if is_manual else f"평균 {data['avg_rank']:.1f}위"
@@ -492,56 +471,17 @@ else:
             elif "2" in display_rank or "3" in display_rank: bg, border, text = "#EFF6FF", "#3B82F6", "#1D4ED8"
             elif "밖" in display_rank or (not is_manual and data['avg_rank'] > 3.0): bg, border, text = "#FEF2F2", "#EF4444", "#B91C1C"
 
-            current_label = data.get('date_label', '어제')
-            api_label_text = '[수동 개입] 현재 실시간 팩트' if is_manual else f'네이버 공식 API ({current_label} 평균)'
-            
             st.markdown(f"""
             <div style="background-color:{bg}; border:2px solid {border}; border-radius:8px; padding:12px; text-align:center; margin-bottom:10px;">
-                <div style="font-size:11px; color:{text}; margin-bottom:2px;">{api_label_text}</div>
                 <div style="font-size:18px; font-weight:bold; color:{text};">{display_rank}</div>
             </div>
             <div style='font-size:12px; color:#334155; line-height:1.6; background:#F1F5F9; padding:8px; border-radius:4px;'>
-                - 단가: <b>{data.get('bid', 0):,}원</b> ({'ON' if data.get('is_on') else 'OFF'})<br>
-                - {current_label} 비용: <b>{data.get('spend', 0):,}원</b><br>
-                - 클릭 유입: <b>{data.get('clicks', 0)}건</b>
+                - 단가: <b>{data.get('bid', 0):,}원</b><br>
+                - 비용: <b>{data.get('spend', 0):,}원</b><br>
+                - 유입: <b>{data.get('clicks', 0)}건</b>
             </div>
             """, unsafe_allow_html=True)
-            
-            advice = ""
-            current_rank_val = 99 if ("밖" in display_rank or (not is_manual and data['avg_rank'] > 3.0)) else float(re.findall(r"[\d.]+", display_rank)[0]) if re.findall(r"[\d.]+", display_rank) else 99
-            current_hour = datetime.datetime.now().hour
-            pacing_warn = "<br><br><b>[예산 페이스 조절]</b> 오전 소진 속도가 과도합니다. 단가를 10% 하향 조절하십시오." if (current_hour <= 13 and data['spend'] >= 15000) else ""
-
-            if data['bid'] >= 4500 and current_rank_val >= 3: advice = f"<b>[품질지수 보정]</b> 단가 상한선 임박. 가격 경쟁을 중단하고 문구를 <u>'추가금 0원'</u>으로 변경하십시오.{pacing_warn}"
-            elif current_rank_val <= 2.0 and data['clicks'] <= 2 and data['spend'] > 0: advice = f"<b>[상품군 스위칭]</b> 유입 저조. <b>C1(법인) 또는 C3(저신용)</b> 영업용 피드로 교체하십시오.{pacing_warn}"
-            elif loc in ["마곡", "가양", "양천향교"]:
-                if current_rank_val <= 1.5: advice = f"<b>[코어 장악 및 확장]</b> 독점 중. <u>영등포, 구로</u> 권역까지 범위를 넓혀 수요를 흡수하십시오.{pacing_warn}"
-                else: advice = f"<b>[우회 전술]</b> 경쟁 과열. 반경 2km 내 <b>화곡역, 등촌동</b> 타겟팅을 침투시키십시오.{pacing_warn}"
-            elif loc == "김포공항": advice = f"<b>[타 지역 인터셉트]</b> 검색 수요 전국구. 노출 지역에 <b>'인천 계양구, 일산 동구'</b>를 강제 연동하십시오."
-            elif loc in ["인천", "안산", "일산"]: advice = f"<b>[광역 공백 방어]</b> 유입 밀림 시 인접 배후 지역까지 노출 범위를 과감히 넓히십시오.{pacing_warn}"
-            elif loc == "강남":
-                if current_rank_val <= 2.0: advice = f"<b>[비즈니스 확장]</b> <b>서초구, 판교</b>까지 패키지로 확장하여 객단가를 극대화하십시오."
-                else: advice = f"<b>[우회]</b> 경쟁 밀림 시 <u>'서초 장기렌트카'</u> 등 인접 롱테일 키워드로 전환하십시오.{pacing_warn}"
-            else: advice = f"<b>[신규 모니터링]</b> 정체 시 즉시 <b>C3(무심사)</b> 피드로 방어하십시오.{pacing_warn}"
-
-            st.markdown(f"<div style='font-size:12px; background-color:#FFFBEB; padding:10px; border-left:4px solid #D97706; margin-top:8px; border-radius:4px; line-height:1.6;'><b>[마스터 작전 지침]</b><br>{advice}</div>", unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown("<h3 style='font-size:18px; color:#1E3A8A; font-weight:bold;'>📈 플레이스 통합 리포트</h3>", unsafe_allow_html=True)
-    
-    col_chart, col_table = st.columns([1, 1])
-    with col_chart:
-        if 'place_7d_flow' in st.session_state and st.session_state.place_7d_flow:
-            flow_df = pd.DataFrame([{"일자": d, "소진액": v} for d, v in st.session_state.place_7d_flow.items()]).sort_values("일자")
-            st.markdown("<div style='font-size:14px; font-weight:bold; color:#EA580C; margin-bottom:10px;'>지점별 플레이스 일자별 총 소진액 흐름</div>", unsafe_allow_html=True)
-            place_chart = alt.Chart(flow_df).mark_bar(color="#EA580C").encode(x=alt.X("일자:N", axis=alt.Axis(labelAngle=0)), y=alt.Y("소진액:Q"), tooltip=["일자:N", alt.Tooltip("소진액:Q", format=",")]).properties(height=250)
-            st.altair_chart(place_chart, use_container_width=True)
-            
-    with col_table:
-        st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E3A8A; margin-bottom:10px;'>현재 시점 지점별 요약 테이블</div>", unsafe_allow_html=True)
-        summary_records = [{"지점명": loc, "현재단가": f"{data.get('bid', 0):,}원", "소진비용": f"{data.get('spend', 0):,}원", "클릭수": f"{data.get('clicks', 0)}건", "순위상태": saved_ranks_dict.get(loc, "미입력")} for loc, data in st.session_state.place_diagnosis_data.items()]
-        if summary_records: st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -551,14 +491,14 @@ st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
 <div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-    3. 파워링크 광고 현황
+    3. 파워링크 광고 데이터 수집
 </div>
 """, unsafe_allow_html=True)
 
 total_power_spend_today = 0
 total_power_spend_7days = 0
 
-if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
+if st.session_state.daily_flow_data:
     sorted_dates = sorted(st.session_state.daily_flow_data.keys())
     for d in sorted_dates:
         spend = st.session_state.daily_flow_data[d].get("파워링크", 0)
@@ -567,8 +507,6 @@ if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
     today_str = datetime.date.today().strftime('%Y-%m-%d')
     if today_str in st.session_state.daily_flow_data:
         total_power_spend_today = st.session_state.daily_flow_data[today_str].get("파워링크", 0)
-    elif sorted_dates:
-        total_power_spend_today = st.session_state.daily_flow_data[sorted_dates[-1]].get("파워링크", 0)
 
 col1, col2 = st.columns(2)
 with col1:
@@ -576,106 +514,58 @@ with col1:
 with col2:
     st.metric(label="최근 7일 누적 파워링크 총 지출액", value=f"{total_power_spend_7days:,} 원")
 
-st.markdown("<div style='font-size:16px; font-weight:bold; color:#475569; margin-top:15px; margin-bottom:10px;'>📅 최근 7일 파워링크 지출 흐름</div>", unsafe_allow_html=True)
-if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
-    flow_cols = st.columns(7)
-    for i, d in enumerate(sorted(st.session_state.daily_flow_data.keys())):
-        short_date = d.split("-")[1] + "/" + d.split("-")[2]
-        spend = st.session_state.daily_flow_data[d].get("파워링크", 0)
-        with flow_cols[i]:
-            st.metric(label=short_date, value=f"{spend:,}원")
-else:
-    st.markdown("<div style='color:#94A3B8; font-size:13px;'>동기화 버튼을 누르면 일자별 흐름이 표시됩니다.</div>", unsafe_allow_html=True)
-
-st.markdown("---")
 default_end = datetime.date.today() - datetime.timedelta(days=1)
 default_start = default_end - datetime.timedelta(days=2)
+date_range = st.date_input("대조군 검증 대상 기간 선택", value=(default_start, default_end))
 
-st.markdown("단가를 조정한 이후의 [검증 대상 기간]을 선택하십시오. 시스템이 자동으로 그 이전 동일한 기간(조정 전)과 비교하여 효율을 진단합니다.")
-date_range = st.date_input("대조군 검증 대상 기간 (조정 후)", value=(default_start, default_end))
-
-if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key="power_sync_btn", type="primary"):
+if st.button("📊 파워링크 통계 추출", key="power_sync_btn", type="primary"):
     if isinstance(date_range, tuple) and len(date_range) == 2:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        post_start_dt, post_end_dt = date_range[0], date_range[1]
-        duration_days = (post_end_dt - post_start_dt).days + 1
-        pre_end_dt = post_start_dt - datetime.timedelta(days=1)
-        pre_start_dt = pre_end_dt - datetime.timedelta(days=duration_days - 1)
-        
-        post_start_str, post_end_str = post_start_dt.strftime('%Y-%m-%d'), post_end_dt.strftime('%Y-%m-%d')
-        pre_start_str, pre_end_str = pre_start_dt.strftime('%Y-%m-%d'), pre_end_dt.strftime('%Y-%m-%d')
-        
-        st.session_state.date_period_info = f"[조정 전] {pre_start_str} ~ {pre_end_str} vs [조정 후] {post_start_str} ~ {post_end_str}"
-        
-        status_text.markdown("캠페인 리스트를 불러오고 있습니다...")
-        all_camps, _ = get_all_naver_campaigns()
-        
-        if all_camps:
-            today = datetime.date.today()
-            d7_start = today - datetime.timedelta(days=6)
-            date_list = [(d7_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
-            today_str = today.strftime('%Y-%m-%d')
+        with st.spinner("파워링크 데이터를 스캔합니다..."):
+            post_start_dt, post_end_dt = date_range[0], date_range[1]
+            duration_days = (post_end_dt - post_start_dt).days + 1
+            pre_end_dt = post_start_dt - datetime.timedelta(days=1)
+            pre_start_dt = pre_end_dt - datetime.timedelta(days=duration_days - 1)
+            
+            post_start_str, post_end_str = post_start_dt.strftime('%Y-%m-%d'), post_end_dt.strftime('%Y-%m-%d')
+            pre_start_str, pre_end_str = pre_start_dt.strftime('%Y-%m-%d'), pre_end_dt.strftime('%Y-%m-%d')
+            
+            all_camps, err = get_all_naver_campaigns()
+            
+            if err == "API_LIMIT_EXCEEDED":
+                st.error("🚨 API 호출 한도가 초과되었습니다.")
+            elif all_camps:
+                today = datetime.date.today()
+                d7_start = today - datetime.timedelta(days=6)
+                date_list = [(d7_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
 
-            power_camps = []
-            place_targets = ["플레이스", "플레", "매장", "지점", "가양", "마곡", "인천", "김포", "안산", "일산", "강남", "양천"]
-            for camp in all_camps:
-                ctype = str(camp.get("campaignTp", camp.get("type", "WEB_SITE"))).upper()
-                cname = str(camp.get("name", ""))
-                if ctype in ["PLACE", "LOCAL_AD"] or any(k in cname for k in place_targets):
-                    continue
-                power_camps.append(camp)
+                power_camps = []
+                place_targets = ["플레이스", "플레", "매장", "지점", "가양", "마곡", "인천", "김포", "안산", "일산", "강남", "양천"]
+                for camp in all_camps:
+                    ctype = str(camp.get("campaignTp", camp.get("type", "WEB_SITE"))).upper()
+                    cname = str(camp.get("name", ""))
+                    if ctype in ["PLACE", "LOCAL_AD"] or any(k in cname for k in place_targets): continue
+                    power_camps.append(camp)
 
-            bot_records = []
-            daily_flow = {d: {"파워링크": 0, "플레이스": 0, "일일소비금액": 0} for d in date_list}
+                bot_records = []
+                daily_flow = {d: {"파워링크": 0, "일일소비금액": 0} for d in date_list}
 
-            if 'power_period_cache' not in st.session_state:
-                st.session_state.power_period_cache = {}
-            local_cache = st.session_state.power_period_cache
+                def process_campaign(camp):
+                    cid = camp.get("nccCampaignId")
+                    cname = camp.get("name")
+                    short_name = re.sub(r'\s*\(.*?\)', '', cname).replace("파워링크#", "").strip()
 
-            def process_campaign(camp, cache):
-                cid = camp.get("nccCampaignId")
-                cname = camp.get("name")
-                short_name = re.sub(r'\s*\(.*?\)', '', cname).replace("파워링크#", "").replace("플레이스#", "").strip()
+                    pre_res = fetch_period_stat_api(cid, pre_start_str, pre_end_str)
+                    post_res = fetch_period_stat_api(cid, post_start_str, post_end_str)
 
-                def _get_stat(s_str, e_str):
-                    cache_key = (cid, s_str, e_str)
-                    if e_str != today_str and cache_key in cache:
-                        return cache[cache_key]
-                    time.sleep(0.05)
-                    sp, clk, ctr, cpc = fetch_period_stat_api(cid, s_str, e_str)
-                    return (sp, clk, ctr, cpc)
+                    day_res = {}
+                    for d in date_list:
+                        day_res[d] = fetch_period_stat_api(cid, d, d)
 
-                pre_res = _get_stat(pre_start_str, pre_end_str)
-                post_res = _get_stat(post_start_str, post_end_str)
+                    return {"cid": cid, "short_name": short_name, "pre": pre_res, "post": post_res, "days": day_res}
 
-                day_res = {}
-                for d in date_list:
-                    day_res[d] = _get_stat(d, d)
-
-                return {
-                    "cid": cid, "short_name": short_name,
-                    "pre": pre_res, "post": post_res, "days": day_res
-                }
-
-            total_camps = len(power_camps)
-            if total_camps > 0:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    futures = [executor.submit(process_campaign, camp, local_cache) for camp in power_camps]
-                    completed = 0
-                    for future in concurrent.futures.as_completed(futures):
-                        completed += 1
-                        progress_bar.progress(completed / total_camps)
-                        status_text.markdown(f"[{completed}/{total_camps}] 파워링크 데이터 초고속 대조 중... ⚡")
+                    for future in concurrent.futures.as_completed([executor.submit(process_campaign, c) for c in power_camps]):
                         res = future.result()
-
-                        cid = res["cid"]
-                        local_cache[(cid, pre_start_str, pre_end_str)] = res["pre"]
-                        local_cache[(cid, post_start_str, post_end_str)] = res["post"]
-                        for d in date_list:
-                            local_cache[(cid, d, d)] = res["days"][d]
-
                         sp_pre, _, ctr_pre, cpc_pre = res["pre"]
                         sp_post, clk_post, ctr_post, cpc_post = res["post"]
 
@@ -687,126 +577,32 @@ if st.button("📊 예산 흐름 및 전후 대조표 추출 (API 연동)", key=
                                 "클릭수_후": clk_post
                             })
                             for d in date_list:
-                                sp_day = res["days"][d][0]
-                                daily_flow[d]["파워링크"] += sp_day
-                                daily_flow[d]["일일소비금액"] += sp_day
+                                daily_flow[d]["파워링크"] += res["days"][d][0]
 
-            st.session_state.power_period_cache = local_cache
-            st.session_state.merged_df = pd.DataFrame(bot_records)
-            st.session_state.daily_flow_data = daily_flow
-            
-            status_text.empty()
-            progress_bar.empty()
-            st.rerun()
-    else:
-        st.error("달력 창에서 시작일과 마감일을 모두 선택해 주십시오.")
+                st.session_state.merged_df = pd.DataFrame(bot_records)
+                st.session_state.daily_flow_data = daily_flow
+                st.success("✅ 파워링크 스캔 성공!")
 
-if 'date_period_info' in st.session_state:
-    st.info(st.session_state.date_period_info)
+if st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
+    st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E3A8A; margin-bottom:10px;'>파워링크 요약</div>", unsafe_allow_html=True)
+    st.dataframe(st.session_state.merged_df[["캠페인명", "조정 후 비용", "클릭수_후"]].rename(columns={"조정 후 비용": "비용", "클릭수_후": "클릭"}), hide_index=True)
 
-if 'daily_flow_data' in st.session_state and st.session_state.daily_flow_data:
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("<h3 style='font-size:18px; color:#1E3A8A; font-weight:bold;'>📈 파워링크 통합 리포트</h3>", unsafe_allow_html=True)
-    
-    col_chart, col_table = st.columns([1, 1])
-    
-    with col_chart:
-        flow_records = [{"일자": d, "소진액": v["파워링크"]} for d, v in st.session_state.daily_flow_data.items()]
-        flow_df = pd.DataFrame(flow_records).sort_values("일자")
-        st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E40AF; margin-bottom:10px;'>파워링크 일자별 총 소진액 흐름</div>", unsafe_allow_html=True)
-        power_chart = alt.Chart(flow_df).mark_bar(color="#1E40AF").encode(x=alt.X("일자:N", axis=alt.Axis(labelAngle=0)), y=alt.Y("소진액:Q"), tooltip=["일자:N", alt.Tooltip("소진액:Q", format=",")]).properties(height=250)
-        st.altair_chart(power_chart, use_container_width=True)
-        
-    with col_table:
-        st.markdown("<div style='font-size:14px; font-weight:bold; color:#1E3A8A; margin-bottom:10px;'>현재 시점 파워링크 요약 (선택기간 기준)</div>", unsafe_allow_html=True)
-        if 'merged_df' in st.session_state and st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
-            type_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
-            summary_records = []
-            for _, r in type_data.iterrows():
-                summary_records.append({
-                    "캠페인명": r['캠페인명'],
-                    "현재비용": f"{int(r['조정 후 비용']):,}원",
-                    "클릭수": f"{int(r.get('클릭수_후', 0))}건",
-                    "현재CPC": f"{int(r['CPC_후']):,}원"
-                })
-            if summary_records:
-                st.dataframe(pd.DataFrame(summary_records), hide_index=True, use_container_width=True)
-
-if 'merged_df' in st.session_state and st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
-    type_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
-    if not type_data.empty:
-        st.markdown("<br><div style='font-size:19px; font-weight:bold; color:#0F172A; margin-bottom:15px; border-left:5px solid #EA580C; padding-left:10px;'>파워링크 전후 성과 상세 대조표</div>", unsafe_allow_html=True)
-        
-        html_table = "<div style='width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; background-color:#FFFFFF !important; border:1px solid #E2E8F0; border-radius:8px;'><table style='width:100%; min-width:850px; text-align:center; border-collapse:collapse; color:#0F172A !important;'><thead style='background-color:#F8FAFC !important; border-bottom:2px solid #CBD5E1; color:#0F172A !important;'><tr><th style='padding:12px; font-size:13px; color:#0F172A !important;'>캠페인명</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이전 비용</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이후 비용</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이전 CTR</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이후 CTR</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이전 CPC</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>이후 CPC</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>최종 조치</th><th style='padding:12px; font-size:13px; color:#0F172A !important;'>진단 사유</th></tr></thead><tbody>"
-        
-        for _, r in type_data.iterrows():
-            ctr_diff = r["클릭률_후"] - r["클릭률_전"]
-            cpc_diff = r["CPC_후"] - r["CPC_전"]
-            
-            txt_pre_spend = f"{int(r['조정 전 비용']):,}원"
-            txt_post_spend = f"{int(r['조정 후 비용']):,}원"
-            txt_pre_ctr = f"{r['클릭률_전']:.2f}%"
-            txt_post_ctr = f"{r['클릭률_후']:.2f}%"
-            txt_pre_cpc = f"{int(r['CPC_전']):,}원"
-            txt_post_cpc = f"{int(r['CPC_후']):,}원"
-            
-            if ctr_diff > 0 and cpc_diff <= 0: cond, c, reason = "유지 (우수)", "#16A34A", f"클릭률 상승({ctr_diff:+.2f}%) 및 단가 절감"
-            elif ctr_diff <= 0 and cpc_diff > 0: cond, c, reason = "수정 필요", "#DC2626", f"클릭률 하락({ctr_diff:.2f}%) 및 단가 인상"
-            elif ctr_diff > 0 and cpc_diff > 0: cond, c, reason = "모니터링", "#EA580C", f"유입은 증가했으나 비용 동반 상승"
-            elif ctr_diff < 0 and cpc_diff < 0: cond, c, reason = "단가 상향", "#2563EB", f"비용은 줄었으나 상권에서 밀려 유입 감소"
-            else: cond, c, reason = "안정화", "#475569", "전후 성과 변동폭 오차 내 균형"
-            
-            html_table += f"<tr style='border-bottom:1px solid #F1F5F9; color:#0F172A !important;'><td style='padding:10px; font-size:13px; font-weight:bold; text-align:left; padding-left:15px; color:#0F172A !important;'>{r['캠페인명']}</td><td style='color:#0F172A !important;'>{txt_pre_spend}</td><td style='color:#0F172A !important;'>{txt_post_spend}</td><td style='color:#0F172A !important;'>{txt_pre_ctr}</td><td style='color:#0F172A !important;'>{txt_post_ctr}</td><td style='color:#0F172A !important;'>{txt_pre_cpc}</td><td style='color:#0F172A !important;'>{txt_post_cpc}</td><td style='font-weight:bold; color:{c};'>{cond}</td><td style='text-align:left; font-size:12px; color:#0F172A !important;'>{reason}</td></tr>"
-        
-        html_table += "</tbody></table></div>"
-        st.markdown(html_table, unsafe_allow_html=True)
-        
 st.markdown('</div>', unsafe_allow_html=True)
 
-
 # ==========================================
-# 4. [4구역] AI 종합 진단 및 작전 지휘소 (파이어베이스 배달 핵심 엔진 포함)
+# 4. [4구역] Vercel 파이어베이스 직송 시스템
 # ==========================================
 st.markdown('<div class="section-box">', unsafe_allow_html=True)
 st.markdown("""
-<div style="background: linear-gradient(90deg, #1E3A8A, #3B82F6); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-    🤖 4. AI 종합 진단 및 작전 지휘소 (팩트 데이터 연동)
+<div style="background: linear-gradient(90deg, #10B981, #059669); color: white; padding: 14px 20px; border-radius: 8px; font-size: 21px; font-weight: bold; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+    🚀 4. 최종 데이터 Vercel (Next.js) 송출
 </div>
 """, unsafe_allow_html=True)
 
-user_remark = st.text_area("오늘 현장 특이사항 조율 (AI 분석 참고용)", value="단기 렌트 유입을 방어하고 전 차량 월차 계약 확보를 위한 집중 노출 세팅 필요", height=70)
+st.markdown("수집된 데이터를 하나의 패키지로 묶어 파이어베이스로 보냅니다. Vercel 화면에 이 데이터가 그대로 표시됩니다.")
 
-if st.button("재고 및 광고 성과 통합 검증 시작 (파이어베이스 창고 직송)", key="ai_report_btn", type="primary"):
-    with st.spinner("수집된 API 통계와 현장 팩트 데이터를 바탕으로 지침을 분석 중입니다..."):
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            
-            diag_info = ""
-            if 'place_diagnosis_data' in st.session_state and st.session_state.place_diagnosis_data:
-                for loc, data in st.session_state.place_diagnosis_data.items():
-                    rank_status = data.get('manual_override', f"API평균 {data.get('avg_rank', 0)}위")
-                    diag_info += f"- [{loc}] 단가: {data.get('bid', 0)}원 / 어제비용: {data.get('spend', 0)}원 / 유입: {data.get('clicks', 0)}건 / 현재상태: {rank_status}\n"
-            
-            sys_prompt = f"""
-            당신은 빌려타렌트카의 퍼포먼스 마케터입니다.
-            다음 100% 팩트 데이터를 바탕으로 비효율 예산 누수를 막고, 영업소별 명확한 단가 조절 및 마케팅 지침 3가지를 구체적 수치와 함께 도출하십시오.
-            [영업소별 팩트 상태] {diag_info}
-            [현장 요구사항] {user_remark}
-            """
-            st.session_state.monitoring_report = model.generate_content(sys_prompt).text
-        except Exception as e:
-            st.warning("⚠️ 구글 AI 허용 한도 초과 혹은 통신 장애. 내부 관제 엔진으로 즉시 백업 분석을 출력합니다.")
-            local_report = """
-            ### 🚨 빌려타렌트카 내부 관제 시스템 긴급 지침안
-            **1. 즉각적인 예산 방어:** 상단 2구역 확인. '순위 밖'인데 지출 발생 시 품질지수 훼손 상태입니다. 문구부터 교체하십시오.
-            **2. C4(단기/월렌트) 주력 재고 전환:** 가용 대수 많은 차량 그룹을 파악하여 마곡 본점/인접 권역 예산을 상향하십시오.
-            **3. 일일 예산 소진 캘리브레이션:** 3구역 최근 흐름상 특정 요일 이탈 캠페인은 노출 시간대를 핵심 시간(08시~15시)으로 축소하십시오.
-            """
-            st.session_state.monitoring_report = local_report
-
-        # 💡 [정형화 조립 엔진] 데이터를 완벽하게 패키징하여 파이어베이스로 보냅니다!
+if st.button("🌟 모든 데이터 모아서 Vercel로 보내기", key="ai_report_btn", type="primary"):
+    with st.spinner("파이어베이스로 통로를 열어 데이터를 발송하는 중..."):
         biz_money_val = f"{st.session_state.get('naver_balance_val', 0):,}원"
         
         payload = {
@@ -829,84 +625,35 @@ if st.button("재고 및 광고 성과 통합 검증 시작 (파이어베이스 
             "powerlinkRows": [],
             "powerlinkFlow": [{"date": d, "spend": v.get("파워링크", 0)} for d, v in sorted(st.session_state.get('daily_flow_data', {}).items())],
             "powerlinkCompare": [],
-            "aiReport": st.session_state.monitoring_report
+            "aiReport": "Vercel 대시보드 통신 연동 완료. 데이터 정상 반영."
         }
         
-        # 인벤토리 카테고리 병합
         if st.session_state.df_clean_data is not None:
             df = st.session_state.df_clean_data
-            target_col = None
-            for col in ['차급', '차종', '분류', '구분', '차량구분']:
-                if col in df.columns:
-                    target_col = col; break
+            target_col = [col for col in ['차급', '차종', '분류', '구분', '차량구분'] if col in df.columns]
             if target_col:
-                payload["inventory"]["categories"] = {str(k): int(v) for k, v in df[target_col].value_counts().to_dict().items()}
+                payload["inventory"]["categories"] = {str(k): int(v) for k, v in df[target_col[0]].value_counts().to_dict().items()}
                 
-        # 플레이스 상세 데이터 병합
-        saved_ranks = load_place_ranks()
-        if 'place_diagnosis_data' in st.session_state:
+        if st.session_state.place_diagnosis_data:
+            saved_ranks = load_place_ranks()
             for loc, d in st.session_state.place_diagnosis_data.items():
                 r_saved = saved_ranks.get(loc, "미입력")
-                
-                current_rank_val = 99
-                if "1위" in r_saved or ("1" in str(d.get('avg_rank', 99))): current_rank_val = 1
-                elif "2위" in r_saved or ("2" in str(d.get('avg_rank', 99))): current_rank_val = 2
-                elif "3위" in r_saved or ("3" in str(d.get('avg_rank', 99))): current_rank_val = 3
-                
-                advice = "[전략 대기] 데이터 분석 중입니다."
-                if loc in ["마곡", "가양", "양천향교"]:
-                    if current_rank_val <= 1.5: advice = "[코어 장악 및 확장] 독점 중입니다. 영등포, 구로 권역까지 범위를 넓혀 수요를 흡수하십시오."
-                    else: advice = "[우회 전술] 경쟁이 과열되었습니다. 반경 2km 내 화곡역, 등촌동 타겟팅으로 침투하십시오."
-                elif loc == "김포공항": advice = "[타 지역 인터셉트] 검색 수요 전국구입니다. 인천 계양구, 일산 동구를 노출 지역에 강제 연동하십시오."
-                elif loc == "강남": advice = "[수요 급상승] 상위 입찰가를 유지하여 점유율 1위를 선점하십시오."
-                elif loc == "안산": advice = "[운영 효율화] 현재 안정적입니다. 예산 과다 지출을 방지하고 클릭 단가 최적화에 집중하십시오."
-                elif loc == "인천": advice = "[권역 확장] 노출 지역을 부평구, 서구로 확대하여 유입 경로를 다각화하십시오."
-                elif loc == "일산": advice = "[타겟 정밀화] 고양시 전역으로 노출을 확대하고, 단기 렌트 수요 중심의 문구로 교체하십시오."
-
                 payload["placeLocations"].append({
                     "id": loc, "name": loc, "status": "운영중" if d.get('is_on') else "대기중",
                     "rank": r_saved if r_saved != "미입력" else f"평균 {d.get('avg_rank',0):.1f}위",
                     "spend": d.get('spend', 0), "sales": d.get('spend', 0) * 8, "count": d.get('clicks', 0),
-                    "advice": advice
+                    "advice": "정상 구동 중"
                 })
 
-        # 파워링크 상세 데이터 병합
-        if 'merged_df' in st.session_state and st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
+        if st.session_state.merged_df is not None and not st.session_state.merged_df.empty:
             p_data = st.session_state.merged_df[st.session_state.merged_df["광고종류"] == "파워링크"]
             for idx, r in p_data.iterrows():
-                kw = r.get('캠페인명', '알수없음')
-                spend_pre, spend_post = r.get('조정 전 비용', 0), r.get('조정 후 비용', 0)
-                ctr_pre, ctr_post = r.get('클릭률_전', 0), r.get('클릭률_후', 0)
-                cpc_pre, cpc_post = r.get('CPC_전', 0), r.get('CPC_후', 0)
-                
-                payload["powerlinkRows"].append({"id": str(idx), "keyword": kw, "status": "운영중", "rank": 0, "bid": cpc_post, "spend": spend_post, "clicks": r.get('클릭수_후', 0), "action": "keep"})
-                
-                ctr_diff, cpc_diff = ctr_post - ctr_pre, cpc_post - cpc_pre
-                if ctr_diff > 0 and cpc_diff <= 0: cond, c, reason = "유지 (우수)", "text-emerald-600", "클릭률 상승 및 단가 절감"
-                elif ctr_diff <= 0 and cpc_diff > 0: cond, c, reason = "수정 필요", "text-red-600", "클릭률 하락 및 단가 인상"
-                elif ctr_diff > 0 and cpc_diff > 0: cond, c, reason = "모니터링", "text-amber-600", "유입 증가, 비용 상승"
-                else: cond, c, reason = "단가 상향", "text-blue-600", "비용 감소, 유입 감소"
-                
-                payload["powerlinkCompare"].append({"keyword": kw, "preSpend": spend_pre, "postSpend": spend_post, "preCtr": ctr_pre, "postCtr": ctr_post, "preCpc": cpc_pre, "postCpc": cpc_post, "cond": cond, "color": c, "reason": reason})
+                payload["powerlinkRows"].append({
+                    "id": str(idx), "keyword": r.get('캠페인명', ''), "status": "운영중", "rank": 0, 
+                    "bid": r.get('CPC_후', 0), "spend": r.get('조정 후 비용', 0), "clicks": r.get('클릭수_후', 0), "action": "keep"
+                })
 
-        # --- 로컬호스트를 없애고 파이어베이스 창고로 바로 쏜다! ---
+        # ✨ 여기가 파이어베이스로 쏘는 진짜 통로입니다!
         sync_to_firebase(payload)
-            
-        time.sleep(1)
-        st.rerun()
-
-if 'monitoring_report' in st.session_state and st.session_state.monitoring_report != "":
-    st.markdown(f'<div style="background-color:#F8FAFC !important; color:#0F172A !important; border:1px solid #CBD5E1; border-radius:8px; padding:20px; margin-top:15px; margin-bottom:15px; min-height:100px; white-space:pre-wrap;">{st.session_state.monitoring_report}</div>', unsafe_allow_html=True)
-    
-    if st.button("카카오톡으로 모니터링 보고서 전송", type="primary"):
-        headers = {"Authorization": "Bearer " + KAKAO_ACCESS_TOKEN}
-        data = {"template_object": json.dumps({"object_type": "text","text": st.session_state.monitoring_report,"link": {"web_url": "http://localhost:8501"}})}
-        try:
-            if requests.post("https://kapi.kakao.com/v2/api/talk/memo/default/send", headers=headers, data=data).status_code == 200:
-                st.success("보고서 전송이 완료되었습니다.")
-            else:
-                st.error("전송에 실패했습니다.")
-        except:
-            st.error("통신 장애로 인해 전송에 실패했습니다.")
 
 st.markdown('</div>', unsafe_allow_html=True)
