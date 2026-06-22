@@ -625,11 +625,12 @@ if st.button("📊 파워링크 통계 추출", key="power_sync_btn", type="prim
                 date_list = [(d7_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
 
                 power_camps = []
-                place_targets = ["플레이스", "플레", "매장", "지점", "가양", "마곡", "인천", "김포", "안산", "일산", "강남", "양천"]
-                for camp in all_camps:
-                    ctype = str(camp.get("campaignTp", camp.get("type", "WEB_SITE"))).upper()
-                    cname = str(camp.get("name", ""))
-                    if ctype in ["PLACE", "LOCAL_AD"] or any(k in cname for k in place_targets): continue
+            # '플레이스'가 명확히 들어간 캠페인만 제외하고 나머지는 모두 파워링크로 간주합니다.
+            for camp in all_camps:
+                ctype = str(camp.get("campaignTp", camp.get("type", "WEB_SITE"))).upper()
+                cname = str(camp.get("name", ""))
+                # "파워링크"라는 단어가 포함되거나, "플레이스/지역" 광고가 아닌 경우 수집합니다.
+                if "파워링크" in cname or (ctype not in ["PLACE", "LOCAL_AD"] and "플레이스" not in cname):
                     power_camps.append(camp)
 
                 bot_records = []
