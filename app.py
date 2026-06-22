@@ -130,7 +130,7 @@ def get_all_naver_campaigns():
 def fetch_campaign_stat_api(camp_id, target_date):
     try:
         time_range_str = json.dumps({"since": target_date, "until": target_date})
-        # 💡 네이버 공식 평균노출순위(avgRnk) 정식 호출 규격 준수
+        # fields에 avgRnk 추가
         req = make_naver_request("GET", f"/stats?idType=CAMPAIGN&id={camp_id}&fields=%5B%22clkCnt%22%2C%22impCnt%22%2C%22salesAmt%22%2C%22avgRnk%22%5D&timeRange={urllib.parse.quote(time_range_str)}")
         with urllib.request.urlopen(req, timeout=5) as res:
             res_data = json.loads(res.read().decode("utf-8"))
@@ -140,7 +140,7 @@ def fetch_campaign_stat_api(camp_id, target_date):
                 clicks = int(stat.get("clkCnt", 0))
                 imps = int(stat.get("impCnt", 0))
                 spend = int(stat.get("salesAmt", 0))
-                avg_rank = float(stat.get("avgRnk", 0.0))
+                avg_rank = float(stat.get("avgRnk", 0.0)) # 순위 데이터 추출
                 ctr = (clicks / imps * 100) if imps > 0 else 0.0
                 return {"spend": spend, "clicks": clicks, "ctr": ctr, "avg_rank": avg_rank}
     except Exception: pass
@@ -394,6 +394,7 @@ if st.session_state.place_diagnosis_data:
             
             is_manual = override_val != "미입력 (API 기준)"
             display_rank = override_val if is_manual else f"평균 {data['avg_rank']:.1f}위"
+            
             bg, border, text = "#F8FAFC", "#CBD5E1", "#475569" 
             if "1" in display_rank: bg, border, text = "#ECFDF5", "#10B981", "#047857"
             elif "2" in display_rank or "3" in display_rank: bg, border, text = "#EFF6FF", "#3B82F6", "#1D4ED8"
@@ -410,6 +411,26 @@ if st.session_state.place_diagnosis_data:
                 - 유입: <b>{data.get('clicks', 0)}건</b>
             </div>
             """, unsafe_allow_html=True)
+            
+            advice = ""
+            current_rank_val = 99 if ("밖" in display_rank or (not is_manual and data['avg_rank'] > 3.0)) else float(re.findall(r"[\d.]+", display_rank)[0]) if re.findall(r"[\d.]+", display_rank) else 99
+            current_hour = datetime.datetime.now().hour
+            pacing_warn = "<br><br><b>[예산 페이스 조절]</b> 오전 소진 속도가 과도합니다. 단가를 10% 하향 조절하십시오." if (current_hour <= 13 and data.get('spend',0) >= 15000) else ""
+
+            if data.get('bid',0) >= 4500 and current_rank_val >= 3: advice = f"<b>[품질지수 보정]</b> 단가 상한선 임박. 가격 경쟁을 중단하고 문구를 <u>'추가금 0원'</u>으로 변경하십시오.{pacing_warn}"
+            elif current_rank_val <= 2.0 and data.get('clicks',0) <= 2 and data.get('spend',0) > 0: advice = f"<b>[상품군 스위칭]</b> 유입 저조. <b>C1(법인) 또는 C3(저신용)</b> 영업용 피드로 교체하십시오.{pacing_warn}"
+            elif loc in ["마곡", "가양", "양천향교"]:
+                if current_rank_val <= 1.5: advice = f"<b>[코어 장악 및 확장]</b> 독점 중. <u>영등포, 구로</u> 권역까지 범위를 넓혀 수요를 흡수하십시오.{pacing_warn}"
+                else: advice = f"<b>[우회 전술]</b> 경쟁 과열. 반경 2km 내 <b>화곡역, 등촌동</b> 타겟팅을 침투시키십시오.{pacing_warn}"
+            elif loc == "김포공항": advice = f"<b>[타 지역 인터셉트]</b> 검색 수요 전국구. 노출 지역에 <b>'인천 계양구, 일산 동구'</b>를 강제 연동하십시오."
+            elif loc in ["인천", "안산", "일산"]: advice = f"<b>[광역 공백 방어]</b> 유입 밀림 시 인접 배후 지역까지 노출 범위를 과감히 넓히십시오.{pacing_warn}"
+            elif loc == "강남":
+                if current_rank_val <= 2.0: advice = f"<b>[비즈니스 확장]</b> <b>서초구, 판교</b>까지 패키지로 확장하여 객단가를 극대화하십시오."
+                else: advice = f"<b>[우회]</b> 경쟁 밀림 시 <u>'서초 장기렌트카'</u> 등 인접 롱테일 키워드로 전환하십시오.{pacing_warn}"
+            else: advice = f"<b>[신규 모니터링]</b> 정체 시 즉시 <b>C3(무심사)</b> 피드로 방어하십시오.{pacing_warn}"
+
+            st.markdown(f"<div style='font-size:12px; background-color:#FFFBEB; padding:10px; border-left:4px solid #D97706; margin-top:8px; border-radius:4px; line-height:1.6;'><b>[마스터 작전 지침]</b><br>{advice}</div><br>", unsafe_allow_html=True)
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ─── 3구역: 파워링크 광고 ───
@@ -445,8 +466,14 @@ if st.button("📊 파워링크 성적표 동기화 실행", key="power_sync_btn
                 today = datetime.date.today()
                 date_list = [(today - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(6, -1, -1)]
                 
-                # 💡 느슨한 필터링 엔진 장착: 플레이스 키워드가 고정으로 들어간 캠페인만 제외하고 전부 수집
-                power_camps = [c for c in all_camps if "파워링크" in str(c.get("name","")) or (str(c.get("campaignTp","")).upper() not in ["PLACE", "LOCAL_AD"] and "플레이스" not in str(c.get("name","")))]
+                # 플레이스 제외하고 파워링크만 남기기
+                power_camps = []
+                for c in all_camps:
+                    ctype = str(c.get("campaignTp", c.get("type", "WEB_SITE"))).upper()
+                    cname = str(c.get("name", ""))
+                    if "파워링크" in cname or (ctype not in ["PLACE", "LOCAL_AD"] and "플레이스" not in cname):
+                        power_camps.append(c)
+
                 bot_records, daily_flow = [], {d: {"파워링크": 0} for d in date_list}
 
                 def process_campaign_parallel(camp):
