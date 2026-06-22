@@ -368,9 +368,8 @@ if st.button(f"📊 네이버 플레이스 성적표 동기화 (기준일: {stat
             st.session_state.api_data_period = display_date_label
             st.rerun()
 
-if st.session_state.place_diagnosis_data:
-    
-            saved_ranks_dict = load_place_ranks()
+  if st.session_state.place_diagnosis_data:
+    saved_ranks_dict = load_place_ranks()
     
     # 새로고침 시 파이어베이스에 저장된 순위 복구
     for loc in place_locations:
@@ -400,9 +399,9 @@ if st.session_state.place_diagnosis_data:
                 default_idx = 0
             
             override_val = st.selectbox("순위 덮어쓰기 (Vercel 즉시 반영)", options_list, index=default_idx, key=f"ui_sb_{loc}", on_change=update_rank_callback, args=(loc,))
-            is_manual = override_val != "미입력 (API 기준)"
-            display_rank = override_val if is_manual else f"평균 {data['avg_rank']:.1f}위"
             
+            is_manual = override_val != "미입력 (API 기준)"
+            display_rank = override_val if is_manual else f"평균 {data['avg_rank']:.1f}위"          
             bg, border, text = "#F8FAFC", "#CBD5E1", "#475569" 
             if "1" in display_rank: bg, border, text = "#ECFDF5", "#10B981", "#047857"
             elif "2" in display_rank or "3" in display_rank: bg, border, text = "#EFF6FF", "#3B82F6", "#1D4ED8"
