@@ -83,12 +83,16 @@ if 'api_data_period' not in st.session_state: st.session_state.api_data_period =
 if 'campaign_list_raw' not in st.session_state: st.session_state.campaign_list_raw = []
 if 'df_clean_data' not in st.session_state: st.session_state.df_clean_data = None
 if 'place_diagnosis_data' not in st.session_state: st.session_state.place_diagnosis_data = {}
-# --- 누락되었던 필수 빈 그릇(변수) 3개 추가 ---
 if 'daily_flow_data' not in st.session_state: st.session_state.daily_flow_data = {}
 if 'merged_df' not in st.session_state: st.session_state.merged_df = None
 if 'monitoring_report' not in st.session_state: st.session_state.monitoring_report = ""
-if 'place_7d_flow' not in st.session_state: st.session_state.place_7d_flow = {}
-# ==========================================
+
+# 💡 [해결] 선택 상자에서 사용할 변수들을 맨 위에서 미리 만들어둡니다!
+place_locations = ["마곡", "가양", "양천향교", "김포공항", "강남", "안산", "인천", "일산"]
+for loc in place_locations:
+    if f"sb_{loc}" not in st.session_state:
+        # 처음엔 기본값으로 '미입력'을 넣어둡니다.
+        st.session_state[f"sb_{loc}"] = "미입력 (API 기준)"
 
 # ==========================================
 # [엔진 1] 네이버 공식 API 무결점 통신 모듈 (스크래핑 전면 폐기)
