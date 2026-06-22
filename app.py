@@ -42,11 +42,11 @@ if 'place_7d_flow' not in st.session_state: st.session_state.place_7d_flow = {}
 if 'naver_balance_val' not in st.session_state: st.session_state.naver_balance_val = 0
 
 # 💡 KeyError 원천 차단: 수동 오버라이드용 세션 변수를 최상단에서 강제 선언합니다.
+# ▼ 이 4줄을 찾아서 아예 지워버리세요.
 place_locations = ["마곡", "가양", "양천향교", "김포공항", "강남", "안산", "인천", "일산"]
 for loc in place_locations:
     if f"sb_val_{loc}" not in st.session_state:
         st.session_state[f"sb_val_{loc}"] = "미입력 (API 기준)"
-
 # ==========================================
 # [SLOT 2] 파이어베이스 클라우드 통로 초기화
 # ==========================================
@@ -369,29 +369,38 @@ if st.button(f"📊 네이버 플레이스 성적표 동기화 (기준일: {stat
             st.rerun()
 
 if st.session_state.place_diagnosis_data:
-    saved_ranks_dict = load_place_ranks()
     
-    # 💡 깜빡임 원천 봉쇄 콜백 비동기 체인 락 구동
-    def update_rank_callback(loc_name):
-        new_val = st.session_state[f"ui_sb_{loc_name}"]
-        st.session_state[f"sb_val_{loc_name}"] = new_val
-        saved_ranks_dict[loc_name] = new_val
-        save_place_ranks(saved_ranks_dict)
+            saved_ranks_dict = load_place_ranks()
+        
+        # 💡 [핵심] 새로고침 시 파이어베이스에 저장된 순위를 최우선으로 가져오도록 복구
+        for loc in place_locations:
+            if f"sb_val_{loc}" not in st.session_state:
+                st.session_state[f"sb_val_{loc}"] = saved_ranks_dict.get(loc, "미입력 (API 기준)")
 
-    cols = st.columns(4)
-    for idx, loc in enumerate(place_locations):
-        data = st.session_state.place_diagnosis_data.get(loc, {})
-        if not data: continue
-        with cols[idx % 4]:
-            st.markdown(f"<div style='background-color:#F8FAFC; padding:8px; border-radius:6px; border-left:4px solid #1E3A8A; margin-bottom:10px;'><b style='font-size:15px; color:#0F172A;'>📍 [지점] {loc}</b></div>", unsafe_allow_html=True)
-            naver_search_url = f"https://m.search.naver.com/search.naver?where=m&query={urllib.parse.quote(loc + ' 렌트카')}"
-            st.markdown(f"<a href='{naver_search_url}' target='_blank' style='display:block; text-align:center; background-color:#22C55E; color:white; padding:8px; border-radius:4px; text-decoration:none; font-size:12px; font-weight:bold; margin-bottom:10px;'>현장 모바일 1초 즉시 확인</a>", unsafe_allow_html=True)
-            
-            try: default_idx = options_list.index(st.session_state[f"sb_val_{loc}"])
-            except: default_idx = 0
-            
-            override_val = st.selectbox("순위 덮어쓰기 (Vercel 즉시 반영)", ["미입력 (API 기준)", "1위", "2위", "3위", "순위 밖"], index=default_idx, key=f"ui_sb_{loc}", on_change=update_rank_callback, args=(loc,))
-            
+        # 깜빡임 원천 봉쇄 콜백
+        def update_rank_callback(loc_name):
+            new_val = st.session_state[f"ui_sb_{loc_name}"]
+            st.session_state[f"sb_val_{loc_name}"] = new_val
+            saved_ranks_dict[loc_name] = new_val
+            save_place_ranks(saved_ranks_dict)
+
+        cols = st.columns(4)
+        for idx, loc in enumerate(place_locations):
+            data = st.session_state.place_diagnosis_data.get(loc, {})
+            if not data: continue
+            with cols[idx % 4]:
+                st.markdown(f"<div style='background-color:#F8FAFC; padding:8px; border-radius:6px; border-left:4px solid #1E3A8A; margin-bottom:10px;'><b style='font-size:15px; color:#0F172A;'>📍 [지점] {loc}</b></div>", unsafe_allow_html=True)
+                naver_search_url = f"https://m.search.naver.com/search.naver?where=m&query={urllib.parse.quote(loc + ' 렌트카')}"
+                st.markdown(f"<a href='{naver_search_url}' target='_blank' style='display:block; text-align:center; background-color:#22C55E; color:white; padding:8px; border-radius:4px; text-decoration:none; font-size:12px; font-weight:bold; margin-bottom:10px;'>현장 모바일 1초 즉시 확인</a>", unsafe_allow_html=True)
+                
+                # 에러 유발 요인 제거 및 옵션 리스트 명시
+                options_list = ["미입력 (API 기준)", "1위", "2위", "3위", "순위 밖"]
+                try: 
+                    default_idx = options_list.index(st.session_state[f"sb_val_{loc}"])
+                except: 
+                    default_idx = 0
+                
+                override_val = st.selectbox("순위 덮어쓰기 (Vercel 즉시 반영)", options_list, index=default_idx, key=f"ui_sb_{loc}", on_change=update_rank_callback, args=(loc,))
             is_manual = override_val != "미입력 (API 기준)"
             display_rank = override_val if is_manual else f"평균 {data['avg_rank']:.1f}위"
             
@@ -449,6 +458,8 @@ col1, col2 = st.columns(2)
 with col1: st.metric(label="오늘 파워링크 총 지출액", value=f"{total_power_spend_today:,} 원")
 with col2: st.metric(label="최근 7일 누적 파워링크 총 지출액", value=f"{total_power_spend_7days:,} 원")
 
+default_end = datetime.date.today() - datetime.timedelta(days=1)
+default_start = default_end - datetime.timedelta(days=2)
 date_range = st.date_input("대조군 검증 대상 기간 (조정 후)", value=(default_start, default_end))
 
 if st.button("📊 파워링크 성적표 동기화 실행", key="power_sync_btn", type="primary"):
