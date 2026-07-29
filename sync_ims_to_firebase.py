@@ -8,14 +8,16 @@ from firebase_admin import credentials, firestore
 
 async def main():
     async with async_playwright() as p:
-        # 깃허브 가상 서버(Linux) 환경을 데스크톱 크롬으로 완전 위장 및 메모리 오류 방지
+        # 깃허브 가상 서버(Linux Cloud)의 봇 감지 차단을 완전 무력화하는 브라우저 옵션
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled'
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--window-size=1920,1080'
             ]
         )
         context = await browser.new_context(
@@ -24,33 +26,54 @@ async def main():
             locale="ko-KR",
             timezone_id="Asia/Seoul"
         )
+
+        # 봇 감지 우회 스크립트 주입 (navigator.webdriver 차단 무력화)
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko'] });
+        """)
+
         page = await context.new_page()
 
-        # 환경변수(Secrets) 또는 기본값 적용
+        # 환경변수(Secrets) 값 읽기
         ims_id = os.environ.get("IMS_ID", "").strip()
         ims_pw = os.environ.get("IMS_PW", "").strip()
 
         print("[1/5] IMS 메인 접속 및 로그인 시작...")
-        # React 비동기 JS가 완전 로드되도록 networkidle로 접속
-        await page.goto("https://imsform.com/login", wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(2000)
-
-        # 아이디 입력란 정밀 탐지 및 입력
-        id_locator = page.locator("input[name='id'], input[name='userId'], input[type='text'], input[placeholder*='아이디']").first
-        await id_locator.wait_for(state="visible", timeout=30000)
-        await id_locator.fill(ims_id)
-
-        # 비밀번호 입력란 정밀 탐지 및 입력
-        pw_locator = page.locator("input[name='password'], input[type='password'], input[placeholder*='비밀번호']").first
-        await pw_locator.wait_for(state="visible", timeout=10000)
-        await pw_locator.fill(ims_pw)
-
-        # 로그인 버튼 클릭
-        submit_btn = page.locator("button[type='submit'], button:has-text('로그인')").first
-        await submit_btn.click()
         
-        print("[2/5] 로그인 성공 및 대기...")
-        await page.wait_for_timeout(3000)
+        try:
+            # 1. 로그인 페이지 접속
+            await page.goto("https://imsform.com/login", wait_until="commit", timeout=60000)
+            await page.wait_for_timeout(3000)
+
+            # 페이지 상태 진단 출력
+            title = await page.title()
+            print(f"  -> 접속 완료 (페이지 제목: '{title}', URL: '{page.url}')")
+
+            # 2. 아이디 입력란 정밀 탐지
+            id_locator = page.locator("input[name='id'], input[name='userId'], input[type='text'], input[placeholder*='아이디'], input").first
+            await id_locator.wait_for(state="visible", timeout=30000)
+            await id_locator.fill(ims_id)
+
+            # 3. 비밀번호 입력란 정밀 탐지
+            pw_locator = page.locator("input[name='password'], input[type='password'], input[placeholder*='비밀번호']").first
+            await pw_locator.wait_for(state="visible", timeout=10000)
+            await pw_locator.fill(ims_pw)
+
+            # 4. 로그인 버튼 클릭
+            submit_btn = page.locator("button[type='submit'], button:has-text('로그인')").first
+            await submit_btn.click()
+            
+            print("[2/5] 로그인 성공 및 메인 이동 대기...")
+            await page.wait_for_timeout(3000)
+
+        except Exception as e:
+            print(f"[진단 오류] 현재 페이지 URL: {page.url}")
+            print(f"[진단 오류] 현재 페이지 제목: {await page.title()}")
+            print(f"[진단 오류] 상세 메시지: {e}")
+            raise e
 
         # ==========================================================
         # [Slot 3] 실시간 배차상태(배차중/대기) 매핑 및 차량 고유 ID 정밀 탐지
@@ -241,17 +264,14 @@ async def main():
                     color = detail_data.get("color", "")
                     options = detail_data.get("options", "")
 
-                    # 데이터 수신 완료 시 즉시 통과
                     if color and options:
                         break
                     
-                    # 1초 추가 대기 후 재시도
                     await page.wait_for_timeout(1000)
 
             except Exception as e:
                 pass
 
-            # 5초 대기 후에도 값이 없으면 진단 로그 출력
             if not color or not options:
                 print(f"  [진단] 차량 {car['carNumber']} -> 색상: '{color or 'IMS 미입력'}', 옵션: '{options or 'IMS 미입력'}' (IMS 실제 공란 가능성)")
 
@@ -281,11 +301,9 @@ async def main():
         firebase_key_env = os.environ.get("FIREBASE_KEY_JSON")
 
         if firebase_key_env:
-            # 깃허브 액션 실행 시: Secrets 환경변수 문자열 JSON 파싱
             cred_dict = json.loads(firebase_key_env)
             cred = credentials.Certificate(cred_dict)
         elif os.path.exists("serviceAccountKey.json"):
-            # 로컬 컴퓨터 실행 시: 파일에서 직접 읽기
             cred = credentials.Certificate("serviceAccountKey.json")
         else:
             raise FileNotFoundError("Firebase 인증 키를 찾을 수 없습니다. (serviceAccountKey.json 또는 FIREBASE_KEY_JSON 환경변수 필요)")
@@ -296,7 +314,6 @@ async def main():
         db = firestore.client()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # Firestore DB 'vehicles' 컬렉션 동기화
         batch = db.batch()
         for v in vehicle_list:
             doc_ref = db.collection("vehicles").document(v["carNumber"])
