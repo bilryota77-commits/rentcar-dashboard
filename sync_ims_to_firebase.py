@@ -8,40 +8,41 @@ from firebase_admin import credentials, firestore
 
 async def main():
     async with async_playwright() as p:
-        # 깃허브 가상 서버 환경을 위해 headless=True 설정
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
+        # 깃허브 가상 서버 환경을 데스크톱 PC 크롬 브라우저로 완전 위장
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-setuid-sandbox']
+        )
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="ko-KR"
+        )
         page = await context.new_page()
 
-        # 환경변수 또는 직접 설정값 적용
-        ims_id = os.environ.get("IMS_ID", "사용자_아이디")
-        ims_pw = os.environ.get("IMS_PW", "사용자_비밀번호")
+        # 환경변수(Secrets) 또는 기본값 적용
+        ims_id = os.environ.get("IMS_ID", "")
+        ims_pw = os.environ.get("IMS_PW", "")
 
         print("[1/5] IMS 메인 접속 및 로그인 시작...")
-        await page.goto("https://imsform.com/login", wait_until="networkidle")
-        
-        # 로그인 폼 입력 및 클릭
-        await page.fill("input[name='id'], input[type='text']", ims_id)
-        await page.fill("input[name='password'], input[type='password']", ims_pw)
-        await page.click("button[type='submit']")
+        await page.goto("https://imsform.com/login", wait_until="domcontentloaded")
+        await page.wait_for_timeout(2000)
+
+        # 아이디 입력란 정밀 다중 탐지 및 입력
+        id_locator = page.locator("input[name='id'], input[name='userId'], input[type='text'], input[placeholder*='아이디']").first
+        await id_locator.wait_for(state="visible", timeout=15000)
+        await id_locator.fill(ims_id)
+
+        # 비밀번호 입력란 정밀 다중 탐지 및 입력
+        pw_locator = page.locator("input[name='password'], input[type='password'], input[placeholder*='비밀번호']").first
+        await pw_locator.fill(ims_pw)
+
+        # 로그인 버튼 클릭
+        submit_btn = page.locator("button[type='submit'], button:has-text('로그인')").first
+        await submit_btn.click()
         
         print("[2/5] 로그인 성공 및 대기...")
-        await page.wait_for_timeout(2000)        
-        await page.fill("input[type='text']", IMS_ID)
-        await page.fill("input[type='password']", IMS_PW)
-        await page.wait_for_timeout(500)
-        await page.keyboard.press("Enter")
-        
-        try:
-            login_btn = await page.query_selector("button:has-text('로그인'), div:has-text('로그인')")
-            if login_btn:
-                await login_btn.click()
-        except Exception:
-            pass
-        
-        print("[2/5] 로그인 대기...")
-        await page.wait_for_timeout(4000)
-
+        await page.wait_for_timeout(3000)
       # ==========================================================
         # [Slot 3] 실시간 배차상태(배차중/대기) 매핑 및 차량 고유 ID 정밀 탐지
         # ==========================================================
