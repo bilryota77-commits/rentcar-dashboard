@@ -8,33 +8,41 @@ from firebase_admin import credentials, firestore
 
 async def main():
     async with async_playwright() as p:
-        # 깃허브 가상 서버 환경을 데스크톱 PC 크롬 브라우저로 완전 위장
+        # 깃허브 가상 서버(Linux) 환경을 데스크톱 크롬으로 완전 위장 및 메모리 오류 방지
         browser = await p.chromium.launch(
             headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled'
+            ]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
-            locale="ko-KR"
+            locale="ko-KR",
+            timezone_id="Asia/Seoul"
         )
         page = await context.new_page()
 
         # 환경변수(Secrets) 또는 기본값 적용
-        ims_id = os.environ.get("IMS_ID", "")
-        ims_pw = os.environ.get("IMS_PW", "")
+        ims_id = os.environ.get("IMS_ID", "").strip()
+        ims_pw = os.environ.get("IMS_PW", "").strip()
 
         print("[1/5] IMS 메인 접속 및 로그인 시작...")
-        await page.goto("https://imsform.com/login", wait_until="domcontentloaded")
+        # React 비동기 JS가 완전 로드되도록 networkidle로 접속
+        await page.goto("https://imsform.com/login", wait_until="networkidle", timeout=60000)
         await page.wait_for_timeout(2000)
 
-        # 아이디 입력란 정밀 다중 탐지 및 입력
+        # 아이디 입력란 정밀 탐지 및 입력
         id_locator = page.locator("input[name='id'], input[name='userId'], input[type='text'], input[placeholder*='아이디']").first
-        await id_locator.wait_for(state="visible", timeout=15000)
+        await id_locator.wait_for(state="visible", timeout=30000)
         await id_locator.fill(ims_id)
 
-        # 비밀번호 입력란 정밀 다중 탐지 및 입력
+        # 비밀번호 입력란 정밀 탐지 및 입력
         pw_locator = page.locator("input[name='password'], input[type='password'], input[placeholder*='비밀번호']").first
+        await pw_locator.wait_for(state="visible", timeout=10000)
         await pw_locator.fill(ims_pw)
 
         # 로그인 버튼 클릭
@@ -43,12 +51,12 @@ async def main():
         
         print("[2/5] 로그인 성공 및 대기...")
         await page.wait_for_timeout(3000)
-      # ==========================================================
+
+        # ==========================================================
         # [Slot 3] 실시간 배차상태(배차중/대기) 매핑 및 차량 고유 ID 정밀 탐지
         # ==========================================================
         print("[3/5] 실시간 배차상태(배차중/대기) 및 차량 목록 통합 수집 시작...")
 
-        # 1단계: carStatus/state 페이지에서 진짜 실시간 상태("배차중", "대기") 매핑
         status_map = {}
         state_page = 1
         while True:
@@ -263,7 +271,9 @@ async def main():
         print(f"최종 추출 완료: 총 {len(vehicle_list)}대 수집 성공")
         print("==================================================")
         
-      # ==========================================================
+        await browser.close()
+
+        # ==========================================================
         # [Slot 5] 파이어베이스 DB 연결 (로컬 키파일 & 깃허브 Secrets 이중 지원)
         # ==========================================================
         print("[5/5] 파이어베이스 DB 동기화 진행 중...")
